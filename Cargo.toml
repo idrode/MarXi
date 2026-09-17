@@ -1,0 +1,60 @@
+[package]
+name = "robinhood-sniper"
+version = "0.1.0"
+edition = "2021"  # cambiar a "2024" cuando el toolchain estable lo soporte de forma consistente
+description = "TUI self-custodial de trading/sniping para memecoins en Robinhood Chain (Uniswap V4 + launchpads tipo Pons)"
+license = "AGPL-3.0-or-later"
+
+[dependencies]
+# --- async runtime ---
+tokio = { version = "1", features = ["full"] }
+
+# --- EVM ---
+# alloy es la única opción viable: ethers-rs está deprecado por su propio equipo.
+# Empezar con el meta-crate "full" y recortar features cuando el proyecto madure.
+alloy = { version = "2.4", features = ["full", "node-bindings"] }
+
+# --- TUI ---
+ratatui = "0.30"
+crossterm = "0.29"
+
+# --- serialización / config ---
+serde = { version = "1", features = ["derive"] }
+# JSON crudo: los bloques de Arbitrum traen txs de sistema (tipo 0x6a) que el
+# tipo Block de alloy (red Ethereum) no deserializa; se leen a mano.
+serde_json = "1"
+toml = "0.8"
+
+# --- secretos / entorno ---
+dotenvy = "0.15"
+
+# --- logging ---
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# --- HTTP / WebSocket ---
+reqwest = { version = "0.12", features = ["json"] }
+tokio-tungstenite = "0.30"
+
+# --- utilidades ---
+anyhow = "1"
+thiserror = "2.0"
+color-eyre = "0.6"
+
+# --- keystore cifrado tipo Ethereum ---
+eth-keystore = "0.5"
+
+# --- cifrado / hashing donde eth-keystore no cubra ---
+zeroize = { version = "1.9", features = ["derive"] }
+
+# --- persistencia local (indexador, posiciones) ---
+# Decisión cerrada (2026-09-10): rusqlite síncrono con SQLite embebido, NO
+# sqlx. Cada tarea de fondo ya vive en su propio tokio::spawn y habla con el
+# render loop por mpsc, así que un driver async no aporta nada; usar
+# spawn_blocking dentro de esas tareas si una query tarda. Ver CLAUDE.md.
+# Versión comprobada en crates.io el 2026-09-10 (max_stable 0.40.2).
+rusqlite = { version = "0.40", features = ["bundled"] }
+
+[profile.release]
+opt-level = 3
+lto = true

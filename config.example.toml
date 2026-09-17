@@ -1,0 +1,95 @@
+# config.example.toml
+# Copiar a config.toml y ajustar. No versionar config.toml (contiene endpoints
+# privados si usas un provider con API key en la URL, aunque la clave privada
+# nunca vive aquí — ver .env.example / security/).
+
+[chain]
+name = "robinhood-chain-mainnet"
+chain_id = 4663
+# testnet: chain_id = 46630
+
+# RPC público oficial: rate-limited, válido para desarrollo/pruebas, NO para
+# producción/sniping en serio (la propia documentación de Robinhood lo dice).
+rpc_http_fallback = "https://rpc.mainnet.chain.robinhood.com"
+
+# Para uso real hace falta un provider dedicado (Alchemy, QuickNode, Chainstack...).
+# La URL con API key va en .env, no aquí. Este campo indica solo qué provider usar.
+rpc_provider = "alchemy"  # "alchemy" | "quicknode" | "chainstack" | "public"
+
+# Explorer oficial (Blockscout), confirmado por la página de soporte de
+# Robinhood (robinhood.com/us/en/support/articles/robinhood-chain-mainnet/).
+# robinscan.io es de terceros y no aparece en documentación oficial: no usar.
+explorer_url = "https://robinhoodchain.blockscout.com"
+
+[gas]
+# Robinhood Chain es Arbitrum Orbit: el coste real de una tx tiene componente
+# L2 (ejecución) + L1 (data fee de settlement en Ethereum). No asumir que
+# gas_limit * gas_price cubre el coste total — hay que consultar el modelo de
+# fee específico de Arbitrum Orbit al implementar la simulación de coste.
+max_priority_fee_gwei = 0.1
+gas_limit_margin_pct = 20  # margen sobre el gas estimado, no ir al límite justo
+
+[trading]
+default_slippage_bps = 300       # 3% - default conservador, ajustable por operación
+tx_deadline_seconds = 60
+# Approve acotado: nunca infinito. 0 = aprobar solo el monto exacto de cada swap.
+approve_max_multiplier = 1       # 1 = exacto; >1 solo si se decide explícitamente asumir ese riesgo
+
+[[launchpads]]
+name = "pons"
+enabled = true
+version = "v2"
+# Fuentes: README oficial github.com/ponsdotdev/ponsfamily (factory) y
+# Bitquery (forwarder/hook). VERIFICADAS ON-CHAIN el 2026-09-10 con
+# `cargo run -- verify` (bytecode + getter de rol, ver chain::verify).
+# Re-ejecutar `verify` si se cambia cualquiera de ellas.
+launch_factory = "0x7ed598bcef8bd9edd8c97a195c6d13f40801ec7e"   # PonsV2LaunchFactory (poolManager/permit2 cruzados con [uniswap_v4])
+# Etiquetado "router" por Bitquery, pero en el fuente V2 no existe tal
+# contrato: on-chain es factory.launchForwarder(). Se mantiene el nombre del
+# campo por compatibilidad; el rol real es "forwarder de lanzamientos".
+launch_router  = "0xe33e9e479df8802cb0866d5d05258bec4cf62948"   # == factory.launchForwarder()
+graduation_hook = "0xe5e702641ea86f4ae6cc3cdaed2b886f976be044"  # PonsV2MemeHook, hook.factory() == launch_factory
+
+[[launchpads]]
+name = "bankr"
+enabled = false  # no soportado en el MVP; placeholder para fase 2
+launch_factory = ""
+launch_router = ""
+graduation_hook = ""
+
+[uniswap_v4]
+# Despliegue oficial de Uniswap V4 en Robinhood Chain (chain 4663).
+# Fuente: https://developers.uniswap.org/docs/protocols/v4/deployments
+# (2026-09-09). pool_manager VERIFICADO ON-CHAIN el 2026-09-10 con
+# `cargo run -- verify` (bytecode + owner()/protocolFeeController() + la
+# factory de Pons lo declara como su poolManager()). position_manager y
+# permit2 confirmados indirectamente por los getters de la factory de Pons.
+# state_view VERIFICADA ON-CHAIN el 2026-09-14 (confirm_uniswap_v4_state_view:
+# bytecode + poolManager() == pool_manager + getSlot0 del pool de JACKET).
+# quoter y universal_router: solo fuente documental, sin verificación
+# on-chain todavía (no se usan hasta Fase 2).
+pool_manager     = "0x8366a39cc670b4001a1121b8f6a443a643e40951"
+position_manager = "0x58daec3116aae6d93017baaea7749052e8a04fa7"
+state_view       = "0xf3334192d15450cdd385c8b70e03f9a6bd9e673b"
+quoter           = "0x8dc178efb8111bb0973dd9d722ebeff267c98f94"
+universal_router = "0x8876789976decbfcbbbe364623c63652db8c0904"
+permit2          = "0x000000000022D473030F116dDEE9F6B43aC78BA3"
+
+[security]
+# Ruta al keystore JSON cifrado (formato estándar tipo geth/ethers). La
+# contraseña NUNCA va aquí; se pide por prompt interactivo al arrancar, o
+# se puede pasar por variable de entorno para uso no interactivo (ver .env.example),
+# asumiendo el riesgo que eso implica.
+keystore_path = "./secrets/keystore.json"
+honeypot_check_provider = "goplus"  # a confirmar si cubre Robinhood Chain vía API
+simulate_before_send = true          # obligatorio en la práctica: no desactivar sin saber por qué
+
+[indexer]
+db_path = "./data/robinhood_sniper.sqlite3"
+# Tamaño de tramo para eth_getLogs de backfill. MEDIDO el 2026-09-14 contra
+# el RPC público oficial (que es por donde van los logs, ver chain::provider):
+# 5M bloques por petición funciona y trae ~1.4k logs en 7 peticiones. El valor
+# anterior (2000) era una suposición: con él harían falta >17.000 peticiones
+# para el histórico de un token, inviable con el 429 del público.
+# NO subir esto pensando en Alchemy: su tier Free corta eth_getLogs en 10 bloques.
+backfill_max_blocks_per_request = 5000000

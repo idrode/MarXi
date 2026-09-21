@@ -323,6 +323,7 @@ pub async fn run_operator_cli(cfg: &AppConfig, address: &str, limit: usize) -> a
     }
     println!("\n(las fechas pueden venir interpoladas entre bloques ancla: sirven\n\
               para ordenar y medir cadencia, no como dato exacto)");
+    cache_profile(cfg, &profile, None);
     Ok(())
 }
 
@@ -450,5 +451,201 @@ pub async fn run_funding_cli(cfg: &AppConfig, address: &str, window_hours: u64) 
         "\nel recuento nativo es un SUELO: la bisección ve saldo neto, así que una\n\
          entrada compensada por una salida mayor en el mismo tramo no se ve."
     );
+
+    // Criterio aprobado el 2026-09-18: separar financiación de arranque de
+    // ingreso del negocio. Sin esto las cifras de arriba se leen mal — la
+    // inmensa mayoría de las entradas son ingresos, no financiación.
+    let classified = print_classification(&provider, &profile, fundings).await?;
+    cache_profile(cfg, &profile, Some(&classified));
     Ok(())
+}
+
+/// Aplica el criterio de las cuatro condiciones y construye el baseline.
+async fn print_classification(
+    provider: &ChainProvider,
+    profile: &crate::data::operator_tracker::OperatorProfile,
+    fundings: Vec<crate::data::operator_tracker::Funding>,
+) -> anyhow::Result<Vec<crate::data::operator_tracker::ClassifiedFunding>> {
+    use crate::data::operator_tracker::baseline::{
+        build_baselines, classify_fundings, summarize, Confidence, FundingKind,
+        MIN_BASELINE_SAMPLES,
+    };
+    use crate::data::operator_tracker::FundingAsset;
+
+    println!(
+        "\nclasificando entradas (criterio de las 4 condiciones: no la inicia él,\n\
+         remitente EOA, nativa interna nunca, activo gastable) ..."
+    );
+    let started = std::time::Instant::now();
+    let classified = classify_fundings(provider, profile, fundings).await?;
+    let s = summarize(&classified);
+    println!("  ({:.1} s)", started.elapsed().as_secs_f64());
+
+    println!("\n=== FINANCIACIÓN DE ARRANQUE vs INGRESO DEL NEGOCIO ===");
+    println!("  {:<34} {:>6}", "entradas totales", s.total);
+    println!("  {:<34} {:>6}", "financiación (confianza alta)", s.startup_high);
+    println!("  {:<34} {:>6}  (airdrop o remitente-relay)", "financiación (confianza baja)", s.startup_low);
+    println!("  {:<34} {:>6}", "ingreso: la inició él mismo", s.self_initiated);
+    println!("  {:<34} {:>6}", "ingreso: remitente con bytecode", s.sender_is_contract);
+    println!("  {:<34} {:>6}", "ingreso: nativa interna", s.native_internal);
+    if s.not_evaluated > 0 {
+        println!("  {:<34} {:>6}  !! no comprobado ≠ ingreso", "sin evaluar", s.not_evaluated);
+    }
+
+    let startup: Vec<_> = classified.iter().filter(|c| c.is_startup()).collect();
+    if startup.is_empty() {
+        println!("\n  ninguna entrada pasa el criterio: esta wallet se autofinancia\n\
+                  con sus propios ingresos en todo el rango mirado.");
+    } else {
+        println!("\n  entradas que pasan el criterio:");
+        println!("    {:<12} {:<20} {:>14}  {:<44} {}", "bloque", "fecha (UTC)", "importe", "de", "nota");
+        for c in &startup {
+            let conf = match c.kind {
+                FundingKind::Startup(conf) => conf.label(),
+                FundingKind::Income(_) => unreachable!("filtrado por is_startup"),
+            };
+            let pre = if c.precedes_first_launch { " · ANTES DEL PRIMER LANZAMIENTO" } else { "" };
+            let infra = match c.sender_nonce {
+                Some(n) if n >= crate::data::operator_tracker::baseline::INFRA_NONCE_THRESHOLD => {
+                    format!(" · remitente con nonce {n}: INFRAESTRUCTURA COMPARTIDA, no wallet madre")
+                }
+                Some(n) => format!(" · nonce del remitente {n}"),
+                None => String::new(),
+            };
+            let delay = c
+                .delay_to_next_launch
+                .map(|d| format!(" · +{} al siguiente launch", fmt_duration(d)))
+                .unwrap_or_default();
+            println!(
+                "    {:<12} {:<20} {:>14}  {:<44} {conf}{pre}{delay}{infra}",
+                c.funding.block,
+                fmt_time(c.funding.timestamp),
+                fmt_amount(c.funding.amount),
+                c.funding.from.map(|a| a.to_string()).unwrap_or_else(|| "?".into()),
+            );
+        }
+    }
+
+    let baselines = build_baselines(&classified);
+    println!("\n=== BASELINE ===");
+    if baselines.is_empty() {
+        println!("  sin muestras de confianza alta: no hay baseline. Es el caso normal\n\
+                  con este criterio, no un fallo.");
+    }
+    for b in &baselines {
+        let asset = match &b.asset {
+            FundingAsset::Native => "ETH nativo".to_string(),
+            FundingAsset::Erc20 { token, .. } => token.to_string(),
+        };
+        println!(
+            "  {asset}: {} muestra(s)  min {}  mediana {}  max {}",
+            b.samples,
+            fmt_amount(b.min),
+            fmt_amount(b.median),
+            fmt_amount(b.max)
+        );
+        if b.samples < MIN_BASELINE_SAMPLES {
+            println!(
+                "    con menos de {MIN_BASELINE_SAMPLES} muestras no se compara nada:\n\
+                 \x20   una financiación nueva saldrá como NoBaseline, y la alerta se\n\
+                 \x20   emite igual diciéndolo."
+            );
+        }
+        if !b.recurring_sources.is_empty() {
+            println!("    remitentes recurrentes (candidatos a wallet madre):");
+            for a in &b.recurring_sources {
+                println!("      {a}");
+            }
+        }
+    }
+    println!(
+        "\nel retardo hasta el siguiente lanzamiento se imprime como DATO, nunca se\n\
+         usa como filtro: medido que con cadencias de ~2 min no discrimina nada."
+    );
+    Ok(classified)
+}
+
+/// Guarda el perfil en la caché de `data::db` y dice qué había antes.
+///
+/// Se avisa por pantalla en vez de hacerlo callando: un snapshot cacheado
+/// tiene una antigüedad y un rango de bloques concretos, y quien lo lea
+/// después tiene que saberlo.
+fn cache_profile(
+    cfg: &AppConfig,
+    profile: &crate::data::operator_tracker::OperatorProfile,
+    classified: Option<&[crate::data::operator_tracker::ClassifiedFunding]>,
+) {
+    let mut db = match crate::data::db::Db::open(&cfg.indexer.db_path) {
+        Ok(db) => db,
+        Err(e) => {
+            // No es motivo para tirar la consulta: el dato ya se ha impreso.
+            println!("\n(no se pudo abrir la caché en {}: {e})", cfg.indexer.db_path);
+            return;
+        }
+    };
+    let previo = db.operator_cache_info(profile.address).ok().flatten();
+    match db.save_operator_profile(profile, classified) {
+        Ok(()) => {
+            print!("\ncacheado en {} ({} lanzamientos", cfg.indexer.db_path, profile.launches.len());
+            match classified {
+                Some(c) => println!(", {} financiaciones clasificadas)", c.len()),
+                None => println!(", financiación sin tocar)"),
+            }
+            if let Some(p) = previo {
+                println!(
+                    "  el snapshot anterior era de {} y cubría hasta el bloque {}",
+                    fmt_time(p.cached_at),
+                    p.history_to_block
+                );
+            }
+        }
+        Err(e) => println!("\n(no se pudo cachear el perfil: {e})"),
+    }
+}
+
+/// `cargo run -- alert list [n]` / `cargo run -- alert <id> <outcome> [nota]`
+///
+/// El ciclo de prueba y error del diseño: una alerta se registra al emitirse y
+/// se cierra después con lo que pasó de verdad. El vocabulario de `outcome` es
+/// libre a propósito — se decide con alertas reales delante, no antes.
+pub fn run_alert_cli(cfg: &AppConfig, args: &[String]) -> anyhow::Result<()> {
+    let db = crate::data::db::Db::open(&cfg.indexer.db_path)?;
+    match args.first().map(String::as_str) {
+        Some("list") | None => {
+            let limit = args.get(1).and_then(|v| v.parse().ok()).unwrap_or(20);
+            let rows = db.recent_alerts(limit, false)?;
+            if rows.is_empty() {
+                println!("no hay alertas registradas todavía en {}.", cfg.indexer.db_path);
+                return Ok(());
+            }
+            println!("{:<6} {:<18} {:<20} {:<44} {}", "id", "tipo", "fecha (UTC)", "wallet", "resultado");
+            for r in rows.iter().rev() {
+                println!(
+                    "{:<6} {:<18} {:<20} {:<44} {}",
+                    r.id,
+                    r.kind,
+                    fmt_time(r.created_at),
+                    r.address,
+                    r.outcome.clone().unwrap_or_else(|| "PENDIENTE".into())
+                );
+            }
+            let pend = db.recent_alerts(usize::MAX.min(10_000), true)?.len();
+            if pend > 0 {
+                println!("\n{pend} sin resultado. Ciérralas con: cargo run -- alert <id> <outcome> [nota]");
+            }
+            Ok(())
+        }
+        Some(id_str) => {
+            let id: i64 = id_str.parse().map_err(|_| {
+                anyhow::anyhow!("uso: cargo run -- alert list [n]  |  cargo run -- alert <id> <outcome> [nota]")
+            })?;
+            let outcome = args.get(1).ok_or_else(|| {
+                anyhow::anyhow!("falta el resultado: cargo run -- alert <id> <outcome> [nota]")
+            })?;
+            let note = if args.len() > 2 { Some(args[2..].join(" ")) } else { None };
+            db.set_alert_outcome(id, outcome, note.as_deref())?;
+            println!("alerta {id} marcada como {outcome}.");
+            Ok(())
+        }
+    }
 }

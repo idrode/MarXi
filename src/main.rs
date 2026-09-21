@@ -76,6 +76,12 @@ async fn main() -> Result<()> {
             let hours = args.get(3).and_then(|v| v.parse().ok()).unwrap_or(24);
             return cli::run_funding_cli(&cfg, addr, hours).await;
         }
+        // operator_tracker paso 4: alertas registradas en data::db y su
+        // resultado (el ciclo de prueba y error).
+        Some("alert") => {
+            let rest: Vec<String> = args.iter().skip(2).cloned().collect();
+            return cli::run_alert_cli(&cfg, &rest);
+        }
         // Render del panel a texto, para validar la TUI sin terminal.
         Some("preview") => {
             let addr = args.get(2).ok_or_else(|| {

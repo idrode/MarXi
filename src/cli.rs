@@ -649,3 +649,176 @@ pub fn run_alert_cli(cfg: &AppConfig, args: &[String]) -> anyhow::Result<()> {
         }
     }
 }
+
+/// `cargo run -- watch [<addr> [--label L] [--notes N] [--force] | remove <addr>]`
+///
+/// Paso 6 de `operator_tracker`: gestiona `watchlist.toml`, la fuente
+/// primaria de qué wallets se vigilan (la DB guarda alertas, no la lista).
+///
+/// Antes de dar de alta una dirección se clasifica on-chain con
+/// `classify_deployer`. Un **posible contrato relay exige `--force`**: el
+/// coste de equivocarse es asimétrico —Multicall3 figura como deployer de
+/// 4.791 lanzamientos de terceros—, así que un relay colado en la lista no
+/// sería una alerta de más sino una manguera que taparía todas las demás. El
+/// resto de casos, `Unknown` incluido, avisan y dejan pasar: un `eth_getCode`
+/// que falla no es prueba de nada.
+pub async fn run_watch_cli(cfg: &AppConfig, args: &[String]) -> anyhow::Result<()> {
+    use crate::data::operator_tracker::{classify_deployer, Watchlist, DEFAULT_WATCHLIST_PATH};
+
+    let path = DEFAULT_WATCHLIST_PATH;
+    let mut list = Watchlist::load(path)?;
+
+    // El subcomando se acepta con guiones o sin ellos (`list` y `--list` son
+    // lo mismo): quien escribe `--list` está pidiendo la lista, no dando una
+    // dirección, y hacerle leer un error de parseo de direcciones por la
+    // forma de escribirlo no aporta nada.
+    let head = args.first().map(|a| a.trim_start_matches('-'));
+
+    match head {
+        // Sin argumentos: mostrar la lista.
+        None | Some("list") | Some("ls") => {
+            print_watchlist(&list, path);
+            Ok(())
+        }
+        Some("help") | Some("h") => {
+            print_watch_usage();
+            Ok(())
+        }
+        Some("remove") | Some("rm") => {
+            let addr: Address = args
+                .get(1)
+                .ok_or_else(|| anyhow::anyhow!("uso: cargo run -- watch remove <dirección>"))?
+                .trim()
+                .parse()
+                .map_err(|e| anyhow::anyhow!("no es una dirección EVM válida: {e}"))?;
+            if !list.remove(addr) {
+                anyhow::bail!("{addr} no estaba en {path}");
+            }
+            list.save(path)?;
+            println!("{addr} quitada de {path}. Quedan {}.", list.operators.len());
+            Ok(())
+        }
+        // Cualquier otra cosa que empiece por guion no es una dirección: es
+        // una opción mal escrita, y se dice así en vez de intentar parsearla.
+        Some(_) if args[0].starts_with('-') => {
+            print_watch_usage();
+            anyhow::bail!("opción desconocida {:?} para `watch`", args[0]);
+        }
+        Some(first) => {
+            let addr: Address = first
+                .trim()
+                .parse()
+                .map_err(|e| anyhow::anyhow!("{first:?} no es una dirección EVM válida: {e}"))?;
+
+            let mut force = false;
+            let mut label = None;
+            let mut notes = None;
+            let mut rest = args[1..].iter();
+            while let Some(flag) = rest.next() {
+                match flag.as_str() {
+                    "--force" | "-f" => force = true,
+                    "--label" | "-l" => {
+                        label = Some(rest.next().cloned().ok_or_else(|| {
+                            anyhow::anyhow!("--label necesita un valor")
+                        })?)
+                    }
+                    "--notes" | "-n" => {
+                        notes = Some(rest.next().cloned().ok_or_else(|| {
+                            anyhow::anyhow!("--notes necesita un valor")
+                        })?)
+                    }
+                    other => anyhow::bail!(
+                        "opción desconocida {other:?}. Uso: cargo run -- watch <addr> \
+                         [--label L] [--notes N] [--force]"
+                    ),
+                }
+            }
+
+            if let Some(existing) = list.find(addr) {
+                println!(
+                    "{addr} ya estaba en {path}{}.",
+                    existing
+                        .label
+                        .as_ref()
+                        .map(|l| format!(" como {l:?}"))
+                        .unwrap_or_default()
+                );
+                print_watchlist(&list, path);
+                return Ok(());
+            }
+
+            // Clasificar antes de dar de alta: es una sola llamada y decide si
+            // esta dirección puede entrar sin --force.
+            let provider = ChainProvider::connect(&cfg.chain).await?;
+            println!("comprobando qué es {addr} en chain {} ...", provider.chain_id);
+            let kind = classify_deployer(&provider, addr).await;
+            println!("  tipo: {}", kind.label());
+
+            if kind == crate::data::operator_tracker::DeployerKind::PossibleRelayContract && !force {
+                anyhow::bail!(
+                    "{addr} tiene bytecode y no es una delegación EIP-7702: parece un contrato\n\
+                     relay, no una wallet de operador. No se añade.\n\n\
+                     Un relay en la watchlist no es una alerta de más: Multicall3 figura como\n\
+                     deployer de 4.791 lanzamientos de terceros, así que taparía el resto de\n\
+                     alertas. Si sabes qué contrato es y aun así lo quieres vigilar:\n\n    \
+                     cargo run -- watch {addr} --force"
+                );
+            }
+            if kind.needs_warning() {
+                // Aquí solo puede quedar Unknown, o un relay con --force.
+                println!(
+                    "\n  !! se añade igualmente, pero esta dirección NO está confirmada como\n\
+                     \x20    wallet de operador. Revisa sus alertas antes de fiarte de ellas."
+                );
+            }
+
+            list.add(addr, label, notes);
+            list.save(path)?;
+            println!("\n{addr} añadida a {path}.");
+            print_watchlist(&list, path);
+            println!(
+                "\n(la vigilancia en vivo todavía no existe: el paso 5 del diseño se descartó\n\
+                 el 2026-09-18 porque dependía de la señal 1, desmontada por los datos. Esta\n\
+                 lista es la que consumirá la señal 2 —`TokenLaunched` de una wallet vigilada—\n\
+                 cuando se implemente.)"
+            );
+            Ok(())
+        }
+    }
+}
+
+fn print_watch_usage() {
+    println!(
+        "uso:\n  \
+         cargo run -- watch                      lista los operadores vigilados\n  \
+         cargo run -- watch <addr> [opciones]    da de alta una wallet\n  \
+         cargo run -- watch remove <addr>        da de baja una wallet\n\n\
+         opciones del alta:\n  \
+         --label <texto>   etiqueta corta del operador\n  \
+         --notes <texto>   notas libres (lo que se quiera conservar va aquí:\n                    \
+         el fichero se reescribe al guardar)\n  \
+         --force           añade una dirección con bytecode (posible relay).\n                    \
+         Sin esto se rechaza: un relay tapa el resto de alertas.\n\n\
+         (`list`, `remove` y `help` se aceptan también con guiones: --list, --help)"
+    );
+}
+
+fn print_watchlist(list: &crate::data::operator_tracker::Watchlist, path: &str) {
+    if list.operators.is_empty() {
+        println!("la watchlist ({path}) está vacía. Añade una con: cargo run -- watch <dirección>");
+        return;
+    }
+    println!("\nwatchlist ({path}) — {} operadores:", list.operators.len());
+    println!("  {:<44} {:<12} {}", "dirección", "alta", "etiqueta");
+    for op in &list.operators {
+        println!(
+            "  {:<44} {:<12} {}",
+            op.address,
+            op.added.as_deref().unwrap_or("-"),
+            op.label.as_deref().unwrap_or("")
+        );
+        if let Some(n) = &op.notes {
+            println!("      {n}");
+        }
+    }
+}

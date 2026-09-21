@@ -82,6 +82,12 @@ async fn main() -> Result<()> {
             let rest: Vec<String> = args.iter().skip(2).cloned().collect();
             return cli::run_alert_cli(&cfg, &rest);
         }
+        // operator_tracker paso 6: la watchlist (watchlist.toml), fuente
+        // primaria de qué wallets se vigilan.
+        Some("watch") => {
+            let rest: Vec<String> = args.iter().skip(2).cloned().collect();
+            return cli::run_watch_cli(&cfg, &rest).await;
+        }
         // Render del panel a texto, para validar la TUI sin terminal.
         Some("preview") => {
             let addr = args.get(2).ok_or_else(|| {

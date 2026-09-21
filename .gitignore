@@ -5,3 +5,8 @@ secrets/
 data/*.sqlite3
 *.log
 CLAUDE.md
+
+# Direcciones reales que el usuario sigue: solo en su máquina, nunca en el
+# repo público. La estructura del fichero está documentada en
+# src/data/operator_tracker/watchlist.rs.
+watchlist.toml

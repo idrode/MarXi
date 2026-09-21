@@ -33,8 +33,12 @@ use alloy::providers::{DynProvider, Provider, ProviderBuilder, WsConnect};
 use alloy::rpc::types::{Filter, Log};
 
 /// Cuántas veces se reintenta un `eth_getLogs` que falla (429 del público,
-/// timeout de consulta) antes de dar el tramo por perdido.
+/// timeout de consulta) antes de partir el tramo en dos.
 const LOG_RETRIES: u32 = 3;
+/// Por debajo de este ancho ya no se parte el tramo: si un rango tan pequeño
+/// sigue fallando, no es que sea grande, es que el RPC no está sirviendo, y
+/// entonces hay que fallar en vez de subdividir hasta el bloque suelto.
+const MIN_CHUNK_BLOCKS: u64 = 64;
 /// Espera base entre reintentos; se multiplica por el número de intento.
 const RETRY_BASE_SECS: u64 = 3;
 
@@ -175,14 +179,28 @@ impl ChainProvider {
     }
 
     /// `eth_getLogs` sobre un rango arbitrariamente grande, troceado en
-    /// tramos de `chunk_blocks` y con reintentos.
+    /// tramos de `chunk_blocks`, con reintentos y **subdivisión del tramo que
+    /// no pasa**.
     ///
     /// Necesario porque el RPC público agota el tiempo (`-32000 log query
-    /// timed out`) en rangos de decenas de millones de bloques y devuelve
-    /// `429` bajo carga. Ambos fallos son transitorios y por tramo, así que
-    /// se reintenta el tramo con espera creciente en vez de abortar todo el
-    /// backfill. Los logs se devuelven en el orden en que los da la chain,
-    /// tramo a tramo, que es orden de bloque ascendente.
+    /// timed out`) en rangos grandes y devuelve `429` bajo carga.
+    ///
+    /// Los dos fallos no son iguales y por eso no basta con reintentar:
+    ///
+    /// - el `429` es carga momentánea y se pasa esperando;
+    /// - el **timeout depende del trabajo que el tramo le cuesta al nodo**, y
+    ///   ese trabajo no baja por esperar. Un tramo que agota el tiempo lo
+    ///   vuelve a agotar las tres veces, y antes eso abortaba el backfill
+    ///   entero dejando al buscador sin datos.
+    ///
+    /// Por eso, agotados los reintentos, el tramo se **parte en dos y se
+    /// reintenta cada mitad** (y así recursivamente): cada partición reduce a
+    /// la mitad el trabajo por petición, que es la variable que de verdad
+    /// manda. Solo se abandona cuando un tramo ya menor de
+    /// `MIN_CHUNK_BLOCKS` sigue fallando — ahí el problema no es el tamaño.
+    ///
+    /// Los logs se devuelven en orden de bloque ascendente, también cuando ha
+    /// habido subdivisión.
     ///
     /// `base` debe traer ya `address` y `topics`; su rango de bloques se
     /// ignora y lo fija esta función.
@@ -198,16 +216,25 @@ impl ChainProvider {
             return Ok(Vec::new());
         }
 
-        let mut out = Vec::new();
+        // Pila de tramos pendientes, en orden ascendente. Un tramo que falla
+        // se sustituye por sus dos mitades **en su sitio**, así que la salida
+        // sigue en orden de bloque aunque haya habido subdivisión.
+        let mut pending: std::collections::VecDeque<(u64, u64)> = std::collections::VecDeque::new();
         let mut from = from_block;
         while from <= to_block {
             let to = from.saturating_add(chunk_blocks - 1).min(to_block);
+            pending.push_back((from, to));
+            from = to + 1;
+        }
+
+        let mut out = Vec::new();
+        while let Some((from, to)) = pending.pop_front() {
             let filter = base.clone().from_block(from).to_block(to);
 
             let mut attempt = 0;
             let part = loop {
                 match self.logs.get_logs(&filter).await {
-                    Ok(v) => break v,
+                    Ok(v) => break Some(v),
                     Err(e) if attempt < LOG_RETRIES => {
                         attempt += 1;
                         let wait = RETRY_BASE_SECS * attempt as u64;
@@ -217,16 +244,33 @@ impl ChainProvider {
                         );
                         tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
                     }
-                    Err(e) => {
-                        return Err(anyhow::anyhow!(
-                            "eth_getLogs falló en el tramo {from}-{to} tras {LOG_RETRIES} reintentos: {e}"
-                        ))
-                    }
+                    Err(e) => match split_range(from, to) {
+                        // El tramo es grande: partirlo baja el trabajo por
+                        // petición, que es lo que provoca el timeout.
+                        Some((lo, hi)) => {
+                            tracing::warn!(
+                                from, to, span = to - from + 1,
+                                "eth_getLogs sigue fallando ({e}); partiendo el tramo en dos"
+                            );
+                            pending.push_front(hi);
+                            pending.push_front(lo);
+                            break None;
+                        }
+                        // Ya es pequeño y sigue fallando: no es el tamaño.
+                        None => {
+                            return Err(anyhow::anyhow!(
+                                "eth_getLogs falló en el tramo {from}-{to} ({} bloques) tras \
+                                 {LOG_RETRIES} reintentos y sin margen para partirlo más: {e}",
+                                to - from + 1
+                            ))
+                        }
+                    },
                 }
             };
-            tracing::debug!(from, to, logs = part.len(), "tramo de backfill resuelto");
-            out.extend(part);
-            from = to + 1;
+            if let Some(part) = part {
+                tracing::debug!(from, to, logs = part.len(), "tramo de backfill resuelto");
+                out.extend(part);
+            }
         }
         Ok(out)
     }
@@ -253,5 +297,56 @@ impl ChainProvider {
     /// expone la URL.
     pub fn has_ws(&self) -> bool {
         self.ws_url.is_some()
+    }
+}
+
+/// Parte `[from, to]` en dos mitades contiguas. `None` si el tramo ya es
+/// menor que `MIN_CHUNK_BLOCKS`: por debajo de ahí partir más no arregla un
+/// timeout, solo multiplica las peticiones contra un RPC que ya está
+/// fallando.
+fn split_range(from: u64, to: u64) -> Option<((u64, u64), (u64, u64))> {
+    let span = to.saturating_sub(from).saturating_add(1);
+    if span < MIN_CHUNK_BLOCKS * 2 {
+        return None;
+    }
+    let mid = from + span / 2 - 1;
+    Some(((from, mid), (mid + 1, to)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn partir_cubre_el_rango_entero_sin_solaparse() {
+        let (lo, hi) = split_range(1000, 5999).unwrap();
+        assert_eq!(lo.0, 1000);
+        assert_eq!(hi.1, 5999);
+        assert_eq!(lo.1 + 1, hi.0, "las mitades deben ser contiguas y no solaparse");
+        assert_eq!((lo.1 - lo.0 + 1) + (hi.1 - hi.0 + 1), 5000);
+    }
+
+    #[test]
+    fn partir_un_tramo_pequeno_devuelve_none() {
+        // Por debajo del doble del mínimo ya no se parte: el problema no es
+        // el tamaño y subdividir solo castigaría más al RPC.
+        assert!(split_range(0, MIN_CHUNK_BLOCKS * 2 - 2).is_none());
+        assert!(split_range(42, 42).is_none());
+    }
+
+    #[test]
+    fn partir_repetido_converge_al_minimo() {
+        // Un tramo de 5M debe poder partirse hasta el mínimo en pocos pasos,
+        // sin bucle infinito ni tramos de ancho 0.
+        let (mut from, mut to) = (0u64, 4_999_999u64);
+        let mut steps = 0;
+        while let Some((lo, _hi)) = split_range(from, to) {
+            assert!(lo.1 >= lo.0);
+            from = lo.0;
+            to = lo.1;
+            steps += 1;
+            assert!(steps < 64, "la subdivisión no converge");
+        }
+        assert!(to - from + 1 < MIN_CHUNK_BLOCKS * 2);
     }
 }

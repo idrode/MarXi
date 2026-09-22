@@ -7,12 +7,14 @@
 //! `watchlist.toml`) de qué wallets se vigilan. La vigilancia en vivo era el
 //! paso 5, descartado el 2026-09-18 al quedar la señal 1 desmontada por los
 //! datos; de ella solo sobrevive la señal 2 (`TokenLaunched` de una wallet de
-//! la watchlist), todavía sin implementar.
+//! la watchlist), implementada el 2026-09-22 en `watcher` y conectada a la
+//! TUI (pestañas Operador y Alertas).
 
 pub mod baseline;
 pub mod funding;
 pub mod history;
 pub mod profile;
+pub mod watcher;
 pub mod watchlist;
 
 pub use baseline::{
@@ -22,5 +24,6 @@ pub use baseline::{
 };
 pub use history::{backfill_operator_history, classify_deployer};
 pub use funding::{backfill_erc20_fundings, find_native_fundings, native_vs_erc20};
+pub use watcher::{spawn_launch_watcher, WatchTransport};
 pub use watchlist::{Watchlist, WatchedOperator, DEFAULT_WATCHLIST_PATH};
 pub use profile::{DeployerKind, Funding, FundingAsset, OperatorProfile, PastLaunch};

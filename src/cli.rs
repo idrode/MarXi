@@ -327,7 +327,7 @@ pub async fn run_operator_cli(cfg: &AppConfig, address: &str, limit: usize) -> a
     Ok(())
 }
 
-fn fmt_duration(secs: u64) -> String {
+pub fn fmt_duration(secs: u64) -> String {
     if secs >= 86400 {
         format!("{:.1} d", secs as f64 / 86400.0)
     } else if secs >= 3600 {
@@ -777,10 +777,11 @@ pub async fn run_watch_cli(cfg: &AppConfig, args: &[String]) -> anyhow::Result<(
             println!("\n{addr} añadida a {path}.");
             print_watchlist(&list, path);
             println!(
-                "\n(la vigilancia en vivo todavía no existe: el paso 5 del diseño se descartó\n\
-                 el 2026-09-18 porque dependía de la señal 1, desmontada por los datos. Esta\n\
-                 lista es la que consumirá la señal 2 —`TokenLaunched` de una wallet vigilada—\n\
-                 cuando se implemente.)"
+                "\n(esta lista la consume la vigilancia de la señal 2 —`TokenLaunched` de una\n\
+                 wallet vigilada—, que arranca sola al abrir la TUI con `cargo run`. Las\n\
+                 alertas se ven en su pestaña y quedan registradas en la base: ciérralas\n\
+                 con `cargo run -- alert <id> <outcome>`. La señal 1, financiación previa,\n\
+                 sigue descartada desde el 2026-09-18.)"
             );
             Ok(())
         }

@@ -54,6 +54,47 @@ pub enum AppEvent {
     /// RPC caído...). El texto va tal cual al panel.
     TokenLookupFailed { message: String },
 
+    // --- operator_tracker: perfil de una wallet (pestaña Operador) ---
+    /// La dirección no era un launch de Pons V2 y se reintenta como operador.
+    /// Solo se llega aquí desde `LookupError::NotAPonsV2Launch`: un RPC caído
+    /// no se reinterpreta como "será una wallet".
+    OperatorLookupStarted { address: String },
+    /// Clasificación resuelta (wallet / delegada 7702 / posible relay). Llega
+    /// antes que el historial porque son un par de `eth_call`.
+    OperatorClassified { view: Box<state::OperatorView> },
+    /// Historial de `TokenLaunched` del deployer resuelto.
+    OperatorHistoryResolved { view: Box<state::OperatorView> },
+    OperatorLookupFailed { message: String },
+    /// El usuario pidió la financiación con `f`. Es la parte cara.
+    OperatorFundingsStarted,
+    OperatorFundingsResolved { view: Box<state::OperatorView> },
+    OperatorFundingsFailed { message: String },
+    /// Alta/baja en `watchlist.toml` desde la pestaña Operador.
+    WatchlistChanged { in_watchlist: bool, message: String },
+
+    // --- señal 2 en vivo ---
+    OperatorWatchStarted {
+        watched: usize,
+        transport: crate::data::operator_tracker::watcher::WatchTransport,
+        from_block: u64,
+    },
+    OperatorWatchFailed { message: String },
+    /// **La señal 2**: una wallet de la watchlist ha lanzado un token.
+    /// `alert_id` es `None` si no se pudo escribir en la base; la alerta se
+    /// muestra igual.
+    OperatorLaunchDetected {
+        alert_id: Option<i64>,
+        deployer: String,
+        label: Option<String>,
+        token: String,
+        pair_token: String,
+        graduation_threshold: String,
+        block: u64,
+        tx_hash: String,
+    },
+    /// El usuario entró en la pestaña Alertas: se da por leído el contador.
+    AlertsSeen,
+
     // --- input de terminal ---
     // Van por aquí a propósito: así `apply_event` sigue siendo la única
     // función que muta `AppState`, que es una invariante del proyecto.
@@ -140,6 +181,92 @@ impl App {
                 self.state.search_status = state::SearchStatus::Failed(message);
             }
 
+            AppEvent::OperatorLookupStarted { address } => {
+                self.state.operator_status = state::OperatorStatus::Classifying;
+                self.state.funding_status = state::FundingStatus::NotRequested;
+                self.state.operator = None;
+                // La consulta de token ya falló; que su error no se quede
+                // pintado como si siguiera vigente.
+                self.state.search_status = state::SearchStatus::Idle;
+                self.state.active_tab = state::Tab::Operator;
+                tracing::info!(%address, "consultando wallet como operador");
+            }
+            AppEvent::OperatorClassified { view } => {
+                self.state.operator = Some(*view);
+                self.state.operator_status = state::OperatorStatus::LoadingHistory;
+            }
+            AppEvent::OperatorHistoryResolved { view } => {
+                self.state.operator = Some(*view);
+                self.state.operator_status = state::OperatorStatus::Done;
+            }
+            AppEvent::OperatorLookupFailed { message } => {
+                self.state.operator_status = state::OperatorStatus::Failed(message);
+            }
+            AppEvent::OperatorFundingsStarted => {
+                self.state.funding_status = state::FundingStatus::Loading;
+            }
+            AppEvent::OperatorFundingsResolved { view } => {
+                self.state.operator = Some(*view);
+                self.state.funding_status = state::FundingStatus::Done;
+            }
+            AppEvent::OperatorFundingsFailed { message } => {
+                self.state.funding_status = state::FundingStatus::Failed(message);
+            }
+            AppEvent::WatchlistChanged { in_watchlist, message } => {
+                if let Some(op) = self.state.operator.as_mut() {
+                    op.in_watchlist = in_watchlist;
+                    if !in_watchlist {
+                        op.watchlist_label = None;
+                    }
+                }
+                self.state.last_trade_message = Some((true, message));
+            }
+
+            AppEvent::OperatorWatchStarted { watched, transport, from_block } => {
+                tracing::info!(watched, transport = transport.label(), from_block, "vigilancia de la señal 2 activa");
+                self.state.watch = state::WatchState::Running {
+                    watched,
+                    transport: transport.label().to_string(),
+                    from_block,
+                };
+            }
+            AppEvent::OperatorWatchFailed { message } => {
+                tracing::warn!(%message, "la vigilancia de la señal 2 no está activa");
+                self.state.watch = state::WatchState::Failed(message);
+            }
+            AppEvent::OperatorLaunchDetected {
+                alert_id,
+                deployer,
+                label,
+                token,
+                pair_token,
+                graduation_threshold,
+                block,
+                tx_hash,
+            } => {
+                self.state.alerts.push(state::LiveAlert {
+                    alert_id,
+                    received_at: now_secs(),
+                    deployer,
+                    label,
+                    token,
+                    pair_token,
+                    graduation_threshold,
+                    block,
+                    tx_hash,
+                });
+                // Poda: la base guarda el registro completo, esto es solo la
+                // ventana visible (deuda nº3, no repetirla).
+                if self.state.alerts.len() > state::MAX_LIVE_ALERTS {
+                    let exceso = self.state.alerts.len() - state::MAX_LIVE_ALERTS;
+                    self.state.alerts.drain(0..exceso);
+                }
+                self.state.alerts_unseen += 1;
+            }
+            AppEvent::AlertsSeen => {
+                self.state.alerts_unseen = 0;
+            }
+
             AppEvent::SearchInputChar(c) => {
                 // Una dirección EVM son 42 caracteres; más allá es basura
                 // pegada por error.
@@ -155,6 +282,9 @@ impl App {
             }
             AppEvent::TabSelected(tab) => {
                 self.state.active_tab = tab;
+                if tab == state::Tab::Alerts {
+                    self.state.alerts_unseen = 0;
+                }
             }
             AppEvent::Quit => {
                 self.state.should_quit = true;
@@ -164,6 +294,15 @@ impl App {
             }
         }
     }
+}
+
+/// Segundos desde epoch. Aquí y no en la tarea de fondo porque el instante
+/// que interesa es el de aplicar el evento, que es lo que se pinta.
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 impl Default for App {

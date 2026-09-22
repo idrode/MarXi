@@ -27,7 +27,31 @@ pub struct AppState {
 
     pub selected_token: Option<TokenView>,
     pub positions: Vec<Position>,
+
+    // --- operator_tracker (pestaña Operador) ---
+    /// Última wallet consultada como operador. La consulta la dispara el
+    /// mismo campo del buscador: si la dirección no es un launch de Pons V2,
+    /// se reintenta por esta vía.
+    pub operator: Option<OperatorView>,
+    pub operator_status: OperatorStatus,
+    /// Estado de la carga de financiación, que va aparte porque es la parte
+    /// cara (minutos) y se pide a mano con `f`.
+    pub funding_status: FundingStatus,
+
+    // --- señal 2 en vivo (pestaña Alertas) ---
+    pub watch: WatchState,
+    /// Alertas de esta sesión, más reciente al final. **Acotada**: sin tope
+    /// sería la misma fuga que `recent_launches` (deuda nº3).
+    pub alerts: Vec<LiveAlert>,
+    /// Alertas que aún no se han mirado en la pestaña Alertas. El contador de
+    /// la barra de estado lo lee para que se vea desde cualquier pestaña.
+    pub alerts_unseen: usize,
 }
+
+/// Tope de alertas guardadas en memoria. Las que se caen por arriba siguen
+/// en la base de datos: `cargo run -- alert list` es el registro completo,
+/// esto solo es la ventana visible de la sesión.
+pub const MAX_LIVE_ALERTS: usize = 200;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
@@ -36,6 +60,11 @@ pub enum Tab {
     /// usar primero (ver CLAUDE.md, "Cambio de prioridad").
     #[default]
     Search,
+    /// Perfil de una wallet como operador de launchpad: clasificación,
+    /// historial de lanzamientos, financiación y si está en la watchlist.
+    Operator,
+    /// Alertas de la señal 2 recibidas en vivo durante esta sesión.
+    Alerts,
     Dashboard,
     Sniper,
     TokenDetail,
@@ -44,8 +73,10 @@ pub enum Tab {
 }
 
 impl Tab {
-    pub const ORDER: [Tab; 6] = [
+    pub const ORDER: [Tab; 8] = [
         Tab::Search,
+        Tab::Operator,
+        Tab::Alerts,
         Tab::Dashboard,
         Tab::Sniper,
         Tab::TokenDetail,
@@ -56,6 +87,8 @@ impl Tab {
     pub fn title(&self) -> &'static str {
         match self {
             Tab::Search => "Buscador",
+            Tab::Operator => "Operador",
+            Tab::Alerts => "Alertas",
             Tab::Dashboard => "Dashboard",
             Tab::Sniper => "Sniper",
             Tab::TokenDetail => "Detalle",
@@ -194,4 +227,139 @@ pub struct Position {
     pub amount: f64,
     pub take_profit: Option<f64>,
     pub stop_loss: Option<f64>,
+}
+
+// ---------------------------------------------------------------------------
+// operator_tracker en la TUI
+// ---------------------------------------------------------------------------
+
+/// En qué punto está la consulta de un operador. Separado de `SearchStatus`
+/// porque los dos flujos comparten campo de entrada pero no estado: una
+/// consulta puede fallar como token y estar cargando como operador.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum OperatorStatus {
+    #[default]
+    Idle,
+    /// Comprobando si la dirección es una wallet o un contrato.
+    Classifying,
+    /// Trayendo el historial de `TokenLaunched` por `topics[3]`.
+    LoadingHistory,
+    Done,
+    Failed(String),
+}
+
+impl OperatorStatus {
+    pub fn is_loading(&self) -> bool {
+        matches!(self, OperatorStatus::Classifying | OperatorStatus::LoadingHistory)
+    }
+}
+
+/// Estado de la carga de financiación de un operador.
+///
+/// Va aparte del resto del perfil porque su coste es de otro orden: el
+/// `Transfer` de ERC-20 se pide **sin filtro de `address`** sobre toda la
+/// chain (es la consulta que agotaba el RPC público antes de la subdivisión
+/// de tramos) y el nativo va por bisección de saldo. Son minutos, no
+/// segundos, así que no se lanza sola: la pide el usuario con `f`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum FundingStatus {
+    #[default]
+    NotRequested,
+    Loading,
+    Done,
+    Failed(String),
+}
+
+/// Lo que la pestaña Operador pinta. Igual que `TokenView`, es un DTO: lo
+/// rellenan las tareas de fondo y la UI solo lo lee.
+#[derive(Debug, Clone, Default)]
+pub struct OperatorView {
+    pub address: String,
+    /// `DeployerKind::label()`: wallet, wallet con delegación 7702, posible
+    /// relay o sin comprobar.
+    pub kind_label: String,
+    /// `true` si la clasificación pide aviso destacado (relay o no evaluado).
+    pub kind_needs_warning: bool,
+    /// `true` solo si es wallet o wallet delegada.
+    pub kind_is_wallet: bool,
+
+    /// Está en `watchlist.toml`, con su etiqueta si la tiene.
+    pub in_watchlist: bool,
+    pub watchlist_label: Option<String>,
+
+    pub launches: usize,
+    /// Mediana de segundos entre lanzamientos consecutivos.
+    pub median_interval_secs: Option<u64>,
+    /// `(pairToken, veces)`, de más usado a menos.
+    pub pair_tokens: Vec<(String, usize)>,
+    pub history_from_block: u64,
+    pub history_to_block: u64,
+    /// Últimos lanzamientos, más reciente al final.
+    pub recent_launches: Vec<OperatorLaunchRow>,
+
+    /// De cuándo era el snapshot cacheado que había antes de esta consulta.
+    /// La caché **no se sirve sola** (decisión del 2026-09-18): esto es
+    /// informativo, el dato mostrado siempre viene de la chain.
+    pub cached_at: Option<u64>,
+
+    // --- financiación, solo si se pidió ---
+    pub fundings_native: usize,
+    pub fundings_erc20: usize,
+    /// Entradas que el criterio de las cuatro condiciones considera
+    /// financiación de arranque, ya clasificadas por confianza.
+    pub startup_high: usize,
+    pub startup_low: usize,
+    pub income: usize,
+    pub not_evaluated: usize,
+    /// Las de arranque, en texto ya formateado para la tabla.
+    pub startup_rows: Vec<String>,
+    /// Resumen del baseline por activo, o vacío si no hay muestra suficiente.
+    pub baseline_rows: Vec<String>,
+    /// `true` si el escaneo nativo llegó a su tope: el recuento es un suelo.
+    pub funding_truncated: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct OperatorLaunchRow {
+    pub block: u64,
+    pub timestamp: u64,
+    pub token: String,
+    pub pair_token: String,
+}
+
+/// Estado de la vigilancia en vivo de la señal 2.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum WatchState {
+    /// No se ha intentado arrancar (no debería verse: el arranque es
+    /// automático si hay watchlist).
+    #[default]
+    Idle,
+    /// La watchlist está vacía, así que no hay nada que vigilar. No es un
+    /// error: es el caso normal la primera vez.
+    NoWatchlist,
+    Starting,
+    Running {
+        watched: usize,
+        /// `WatchTransport::label()`: WebSocket o sondeo.
+        transport: String,
+        from_block: u64,
+    },
+    Failed(String),
+}
+
+/// Una alerta de la señal 2 tal y como se pinta.
+#[derive(Debug, Clone)]
+pub struct LiveAlert {
+    /// `id` en la tabla `alert`, que es con el que se cierra el ciclo de
+    /// prueba y error (`cargo run -- alert <id> <outcome>`). `None` si la
+    /// base falló: la alerta se muestra igual, marcada como no persistida.
+    pub alert_id: Option<i64>,
+    pub received_at: u64,
+    pub deployer: String,
+    pub label: Option<String>,
+    pub token: String,
+    pub pair_token: String,
+    pub graduation_threshold: String,
+    pub block: u64,
+    pub tx_hash: String,
 }

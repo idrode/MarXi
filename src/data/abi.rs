@@ -205,6 +205,25 @@ pub fn token_launched_by_deployer_filter(factory: Address, deployer: Address) ->
         .topic3(deployer.into_word())
 }
 
+/// Filtro de `TokenLaunched` de **varios** deployers a la vez (la watchlist).
+///
+/// `topics[3]` admite una lista de valores, que el nodo evalúa en OR: una sola
+/// suscripción cubre toda la watchlist y **filtra en el nodo, no en el
+/// cliente**. Es lo que hace barata la señal 2 en vivo — sin esto habría que
+/// recibir los ~333 lanzamientos por cada 20 000 bloques del launchpad entero
+/// y descartarlos aquí.
+///
+/// Con la lista vacía devolvería un filtro sin restricción de deployer, que es
+/// justo lo contrario de lo que se pide; por eso el llamante debe comprobarlo
+/// antes (lo hace `watcher::spawn_launch_watcher`).
+pub fn token_launched_by_deployers_filter(factory: Address, deployers: &[Address]) -> Filter {
+    let topics: Vec<alloy::primitives::B256> = deployers.iter().map(|d| d.into_word()).collect();
+    Filter::new()
+        .address(factory)
+        .event_signature(TokenLaunched::SIGNATURE_HASH)
+        .topic3(topics)
+}
+
 /// Filtro de todos los `TokenLaunched` de la factory, sin filtrar deployer.
 /// Lo usa el watcher del factory completo (Fase 1, punto 2).
 pub fn token_launched_filter(factory: Address) -> Filter {

@@ -337,13 +337,23 @@ pub fn fmt_duration(secs: u64) -> String {
     }
 }
 
-/// `cargo run -- funding <address> [ventana_horas]`
+/// `cargo run -- funding <address> [ventana_horas] [--from-block N]`
 ///
 /// Mide la financiación de una wallet de operador y, sobre todo, **el reparto
 /// real ETH-nativo vs ERC-20**: el dato del que el usuario hizo depender el
 /// punto (c) del diseño (si la mayoría fuese ETH nativo, había que ir a
 /// Blockscout desde el principio).
-pub async fn run_funding_cli(cfg: &AppConfig, address: &str, window_hours: u64) -> anyhow::Result<()> {
+///
+/// `from_block` fija el inicio del rango a mano. Hace falta para creadores que
+/// no aparecen como `deployer` de `TokenLaunched` (lanzaron por un contrato
+/// intermediario o en otro launchpad): sin él no hay primer lanzamiento con el
+/// que acotar el rango y el comando no mide nada.
+pub async fn run_funding_cli(
+    cfg: &AppConfig,
+    address: &str,
+    window_hours: u64,
+    from_block: Option<u64>,
+) -> anyhow::Result<()> {
     use crate::data::operator_tracker::funding::{
         backfill_erc20_fundings, fill_timestamps, find_native_fundings, fundings_before_launch,
         native_vs_erc20,
@@ -367,14 +377,29 @@ pub async fn run_funding_cli(cfg: &AppConfig, address: &str, window_hours: u64) 
         println!("  !! tiene bytecode: puede ser un relay, no una wallet financiable.");
     }
     println!("  {:<14} {}", "lanzamientos", profile.launches.len());
-    let Some(first) = profile.launches.first() else {
-        println!("\nsin lanzamientos: no hay ventana que medir.");
-        return Ok(());
+    let manual_range = from_block.is_some();
+    let from_block = match (from_block, profile.launches.first()) {
+        (Some(n), _) => n,
+        // Un margen por debajo del primer lanzamiento: la financiación que lo
+        // hizo posible es anterior a él.
+        (None, Some(first)) => first.block.saturating_sub(200_000).max(1),
+        (None, None) => {
+            println!(
+                "\nsin lanzamientos como deployer de Pons V2: no hay ventana que medir.\n\
+                 Si creó su token por un contrato intermediario o en otro launchpad,\n\
+                 pasa el rango a mano: --from-block <bloque>."
+            );
+            return Ok(());
+        }
     };
-    // Un margen por debajo del primer lanzamiento: la financiación que lo
-    // hizo posible es anterior a él.
-    let from_block = first.block.saturating_sub(200_000).max(1);
     let to_block = profile.history_to_block;
+    if profile.launches.is_empty() {
+        println!(
+            "  !! rango manual sin lanzamientos propios en V2: no hay retardo hasta el\n     \
+             siguiente lanzamiento, y ningún ERC-20 cuenta como activo gastable\n     \
+             (la condición 4 usa sus pairTokens), así que todo ERC-20 sale en BAJA."
+        );
+    }
     println!("  {:<14} {from_block} → {to_block}", "rango");
 
     println!("\nfinanciaciones ERC-20 (eth_getLogs, Transfer con topics[2] = wallet) ...");
@@ -456,7 +481,13 @@ pub async fn run_funding_cli(cfg: &AppConfig, address: &str, window_hours: u64) 
     // ingreso del negocio. Sin esto las cifras de arriba se leen mal — la
     // inmensa mayoría de las entradas son ingresos, no financiación.
     let classified = print_classification(&provider, &profile, fundings).await?;
-    cache_profile(cfg, &profile, Some(&classified));
+    if manual_range && profile.launches.is_empty() {
+        // Un perfil sin lanzamientos y con un rango elegido a mano no es un
+        // snapshot de operador: no se mezcla con la caché.
+        println!("\n(rango manual sin lanzamientos propios: no se cachea)");
+    } else {
+        cache_profile(cfg, &profile, Some(&classified));
+    }
     Ok(())
 }
 

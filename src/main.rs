@@ -70,11 +70,25 @@ async fn main() -> Result<()> {
         // operator_tracker paso 3: financiación de una wallet y reparto
         // ETH-nativo vs ERC-20.
         Some("funding") => {
-            let addr = args.get(2).ok_or_else(|| {
-                anyhow::anyhow!("uso: cargo run -- funding <dirección> [ventana en horas]")
-            })?;
-            let hours = args.get(3).and_then(|v| v.parse().ok()).unwrap_or(24);
-            return cli::run_funding_cli(&cfg, addr, hours).await;
+            const USAGE: &str =
+                "uso: cargo run -- funding <dirección> [ventana en horas] [--from-block N]";
+            let addr = args.get(2).ok_or_else(|| anyhow::anyhow!(USAGE))?;
+            let mut hours = 24;
+            let mut from_block = None;
+            let mut rest = args.iter().skip(3);
+            while let Some(arg) = rest.next() {
+                if arg == "--from-block" {
+                    let n = rest.next().ok_or_else(|| anyhow::anyhow!(USAGE))?;
+                    from_block = Some(n.parse::<u64>().map_err(|e| {
+                        anyhow::anyhow!("--from-block {n:?} no es un número de bloque: {e}")
+                    })?);
+                } else {
+                    hours = arg
+                        .parse()
+                        .map_err(|e| anyhow::anyhow!("ventana {arg:?} no es un número de horas: {e}\n{USAGE}"))?;
+                }
+            }
+            return cli::run_funding_cli(&cfg, addr, hours, from_block).await;
         }
         // operator_tracker paso 4: alertas registradas en data::db y su
         // resultado (el ciclo de prueba y error).

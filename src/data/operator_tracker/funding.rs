@@ -103,6 +103,7 @@ pub async fn backfill_erc20_fundings(
             block,
             timestamp: 0, // lo rellena quien componga el perfil
             tx_hash: log.transaction_hash,
+            via_contract: None,
         });
     }
     Ok(out)
@@ -216,8 +217,32 @@ async fn record_native(
             }
         }
     }
+    // Sin tx directa: se busca la tx que la provocó como la única del bloque
+    // cuyo calldata menciona la wallet (así llega un *fill* de bridge o una
+    // entrega de relay). Heurística: con cero o varias candidatas no se
+    // atribuye nada, en vez de adivinar.
+    let mut via_contract = None;
     if from.is_none() {
         scan.native_internal += 1;
+        let needle = format!("{wallet:x}");
+        let needle = needle.trim_start_matches("0x");
+        let candidates: Vec<&serde_json::Value> = raw
+            .get("transactions")
+            .and_then(|v| v.as_array())
+            .map(|txs| {
+                txs.iter()
+                    .filter(|tx| {
+                        tx.get("input")
+                            .and_then(|v| v.as_str())
+                            .is_some_and(|s| s.to_ascii_lowercase().contains(needle))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        if let [tx] = candidates.as_slice() {
+            via_contract = tx.get("to").and_then(|v| v.as_str()).and_then(|s| s.parse().ok());
+            tx_hash = tx.get("hash").and_then(|v| v.as_str()).and_then(|s| s.parse().ok());
+        }
     }
 
     scan.fundings.push(Funding {
@@ -228,6 +253,7 @@ async fn record_native(
         block,
         timestamp,
         tx_hash,
+        via_contract,
     });
     Ok(())
 }

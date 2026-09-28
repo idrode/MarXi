@@ -420,6 +420,12 @@ pub(crate) fn encode_funding_kind(kind: &FundingKind) -> (&'static str, Option<S
         FundingKind::Startup(Confidence::Low(LowReason::SenderLooksLikeInfrastructure)) => {
             ("startup_low", Some("sender_infrastructure".into()))
         }
+        FundingKind::Startup(Confidence::Low(LowReason::InternalViaKnownCarrier)) => {
+            ("startup_low", Some("internal_known_carrier".into()))
+        }
+        FundingKind::Startup(Confidence::Low(LowReason::InternalViaUnidentifiedCarrier)) => {
+            ("startup_low", Some("internal_unidentified_carrier".into()))
+        }
         FundingKind::Income(IncomeReason::NativeInternal) => ("income", Some("native_internal".into())),
         FundingKind::Income(IncomeReason::SenderIsContract) => {
             ("income", Some("sender_is_contract".into()))
@@ -549,6 +555,7 @@ mod tests {
                 block: 64_386_842,
                 timestamp: 1_700_000_100,
                 tx_hash: Some(B256::repeat_byte(7)),
+                via_contract: None,
             },
             kind,
             sender_nonce: Some(325_161),

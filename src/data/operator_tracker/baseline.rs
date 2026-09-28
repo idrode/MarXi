@@ -29,7 +29,13 @@
 //!
 //! 1. **No la inicia él**: `tx.from != wallet`.
 //! 2. **El remitente es una wallet** (EOA o delegada EIP-7702).
-//! 3. **Una entrada nativa interna (`from == None`) nunca es financiación.**
+//! 3. **Una entrada nativa interna (`from == None`) nunca es financiación**
+//!    en una wallet que ya tenía historial. **Corregido el 2026-09-28** (usuario):
+//!    la regla se calibró con operadores que cobran sus ingresos por contrato,
+//!    pero en una **wallet nueva** (nonce 0 justo antes de la entrada) una
+//!    nativa interna es la entrega de un bridge/relay, es decir, su
+//!    financiación de arranque. Casos que lo destaparon: ZZZ (1 ETH, 193 s antes
+//!    de lanzar) y PONS (0,165 ETH vía `0xccc88a9d…`). Ver `classify_internal`.
 //! 4. **El activo tiene que ser gastable por él**: ETH nativo o un token que
 //!    ya ha usado como `pairToken`. Esto **no descarta, degrada** a confianza
 //!    baja (probable airdrop).
@@ -75,6 +81,14 @@ pub enum LowReason {
     AssetNotSpendable,
     /// Refinamiento del 2026-09-18: el remitente tiene nonce de relay.
     SenderLooksLikeInfrastructure,
+    /// Nativa interna a una wallet nueva, entregada por un contrato de
+    /// `KNOWN_DELIVERY_CONTRACTS`. Baja por la misma razón que un remitente
+    /// infraestructura: lo entrega infraestructura compartida.
+    InternalViaKnownCarrier,
+    /// Nativa interna a una wallet nueva por un contrato sin identificar (o sin
+    /// tx atribuible). Cuenta como financiación porque la wallet no tiene
+    /// ingresos propios que pudiera estar cobrando.
+    InternalViaUnidentifiedCarrier,
 }
 
 impl Confidence {
@@ -84,6 +98,12 @@ impl Confidence {
             Confidence::Low(LowReason::AssetNotSpendable) => "BAJA (activo no gastable: ¿airdrop?)",
             Confidence::Low(LowReason::SenderLooksLikeInfrastructure) => {
                 "BAJA (remitente = infraestructura compartida)"
+            }
+            Confidence::Low(LowReason::InternalViaKnownCarrier) => {
+                "BAJA (entrega interna por bridge/relay conocido a wallet nueva)"
+            }
+            Confidence::Low(LowReason::InternalViaUnidentifiedCarrier) => {
+                "BAJA (entrega interna por contrato sin identificar a wallet nueva)"
             }
         }
     }
@@ -102,6 +122,16 @@ impl Confidence {
 /// 100 000 deja 10× de margen sobre la wallet normal más activa observada y
 /// 3× por debajo de la infraestructura menos activa.
 pub const INFRA_NONCE_THRESHOLD: u64 = 100_000;
+
+/// Contratos observados entregando ETH nativo por llamada interna (bridge,
+/// solver o relay). Solo cambian la etiqueta de una nativa interna a una
+/// wallet nueva (`InternalViaKnownCarrier`); **no son una lista de confianza**.
+///
+/// - `0xccc88a9d…`: destino de la flota de relays con nonce ~325 k (medido
+///   2026-09-18) y vía por la que llegaron los 0,165 ETH al creador de PONS
+///   (2026-09-28). Sin identificar el servicio.
+pub const KNOWN_DELIVERY_CONTRACTS: &[Address] =
+    &[alloy::primitives::address!("ccc88a9d1b4ed6b0eaba998850414b24f1c315be")];
 
 /// Límite inferior de la **zona gris** de nonce del remitente: por encima de
 /// la wallet normal más activa observada (10 929) y por debajo de
@@ -190,6 +220,7 @@ pub async fn classify_fundings(
         let kind = classify_one(
             provider,
             wallet,
+            first_launch_ts,
             &spendable,
             &mut sender_is_wallet,
             &mut sender_nonce,
@@ -222,14 +253,33 @@ pub async fn classify_fundings(
 async fn classify_one(
     provider: &ChainProvider,
     wallet: Address,
+    first_launch_ts: Option<u64>,
     spendable: &HashSet<Address>,
     sender_is_wallet: &mut HashMap<Address, bool>,
     sender_nonce: &mut HashMap<Address, u64>,
     funding: &Funding,
 ) -> FundingKind {
-    // (3) nativa interna: nunca es financiación. Gratis, va primero.
+    // (3) nativa interna: en una wallet con historial nunca es financiación;
+    // en una wallet nueva sí (ver `classify_internal`).
     let Some(from) = funding.from else {
-        return FundingKind::Income(IncomeReason::NativeInternal);
+        // Posterior a su primer lanzamiento ⇒ ya tenía nonce > 0: ingreso sin
+        // gastar una llamada. Solo se consulta el nonce cuando puede ser 0.
+        let after_first_launch =
+            first_launch_ts.is_some_and(|ts| funding.timestamp > 0 && funding.timestamp >= ts);
+        if after_first_launch || funding.block == 0 {
+            return FundingKind::Income(IncomeReason::NativeInternal);
+        }
+        return match provider
+            .http()
+            .get_transaction_count(wallet)
+            .block_id((funding.block - 1).into())
+            .await
+        {
+            Ok(n) => classify_internal(n, funding.via_contract),
+            Err(e) => FundingKind::Income(IncomeReason::NotEvaluated(format!(
+                "nativa interna: no se pudo leer el nonce previo de la wallet ({e})"
+            ))),
+        };
     };
 
     // (2) el remitente tiene que ser una wallet. Cacheado por remitente.
@@ -293,6 +343,28 @@ async fn classify_one(
         )),
         Err(e) => FundingKind::Income(IncomeReason::NotEvaluated(e.to_string())),
     }
+}
+
+/// Criterio para una nativa interna (`from == None`) según el historial de la
+/// wallet **justo antes** de la entrada.
+///
+/// - Nonce previo > 0: la wallet ya operaba y lo interno es cobro de su propio
+///   negocio (curva, fees): ingreso, la regla original del 2026-09-18.
+/// - Nonce previo = 0: la wallet nunca había firmado nada, así que no puede
+///   estar cobrando ingresos propios; lo que le entra por un contrato es la
+///   entrega de un bridge/relay. Es financiación de arranque, en confianza
+///   baja (la entrega infraestructura compartida), con el motivo distinguiendo
+///   si el contrato está en `KNOWN_DELIVERY_CONTRACTS`.
+pub fn classify_internal(wallet_nonce_before: u64, via_contract: Option<Address>) -> FundingKind {
+    if wallet_nonce_before > 0 {
+        return FundingKind::Income(IncomeReason::NativeInternal);
+    }
+    let known = via_contract.is_some_and(|c| KNOWN_DELIVERY_CONTRACTS.contains(&c));
+    FundingKind::Startup(Confidence::Low(if known {
+        LowReason::InternalViaKnownCarrier
+    } else {
+        LowReason::InternalViaUnidentifiedCarrier
+    }))
 }
 
 /// Quién firmó la tx. Se pide como JSON crudo por la misma razón que el bloque
@@ -519,6 +591,7 @@ mod tests {
             block: 1,
             timestamp: 100,
             tx_hash: None,
+            via_contract: None,
         }
     }
     fn c(amount: f64, kind: FundingKind, from: Option<Address>) -> ClassifiedFunding {
@@ -595,4 +668,26 @@ mod tests {
         let v = judge(&b, &c(1.0, FundingKind::Income(IncomeReason::NativeInternal), None), DEFAULT_NATIVE_NOISE_FLOOR);
         assert_eq!(v, FundingVerdict::NotFunding(IncomeReason::NativeInternal));
     }
+
+    #[test]
+    fn nativa_interna_depende_del_historial_de_la_wallet() {
+        let ccc = KNOWN_DELIVERY_CONTRACTS[0];
+        let otro = Address::repeat_byte(0xd2);
+        // Operador con historial: la regla original no cambia.
+        assert_eq!(classify_internal(5, Some(ccc)), FundingKind::Income(IncomeReason::NativeInternal));
+        assert_eq!(classify_internal(1, None), FundingKind::Income(IncomeReason::NativeInternal));
+        // Wallet nueva: cuenta como financiación (caso PONS vía 0xccc88a9d…).
+        assert_eq!(
+            classify_internal(0, Some(ccc)),
+            FundingKind::Startup(Confidence::Low(LowReason::InternalViaKnownCarrier))
+        );
+        // Wallet nueva por un contrato sin identificar (caso ZZZ) o sin tx atribuible.
+        for via in [Some(otro), None] {
+            assert_eq!(
+                classify_internal(0, via),
+                FundingKind::Startup(Confidence::Low(LowReason::InternalViaUnidentifiedCarrier))
+            );
+        }
+    }
+
 }

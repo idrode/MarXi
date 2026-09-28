@@ -52,6 +52,11 @@ pub struct Funding {
     pub block: u64,
     pub timestamp: u64,
     pub tx_hash: Option<B256>,
+    /// Solo en nativas internas (`from == None`): el contrato al que iba la tx
+    /// que la provocó. Se identifica como la **única** tx del bloque cuyo
+    /// calldata menciona la wallet (heurística; si hay cero o varias, `None`).
+    /// Con él se distingue una entrega de bridge/relay a una wallet nueva.
+    pub via_contract: Option<Address>,
 }
 
 /// Qué es la dirección que figura como `deployer` en `TokenLaunched`.

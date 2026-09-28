@@ -62,6 +62,17 @@ fn known_funder(a: Address) -> Option<&'static str> {
     KNOWN_FUNDERS.iter().find(|(k, _)| *k == s).map(|(_, v)| *v)
 }
 
+/// Marca de lectura de una entrada: por el nonce del remitente, o
+/// `entrega_interna` si llegó por llamada interna (no hay remitente cuyo nonce
+/// leer, y "nonce_desconocido" sugeriría un fallo que no hubo).
+fn funding_flag(c: &ClassifiedFunding) -> &'static str {
+    if c.funding.from.is_none() {
+        "entrega_interna"
+    } else {
+        sender_flag(c.sender_nonce)
+    }
+}
+
 /// Marca de lectura por el nonce del remitente (no cambia la clasificación).
 fn sender_flag(nonce: Option<u64>) -> &'static str {
     match nonce {
@@ -386,7 +397,7 @@ fn write_main_row(w: &mut impl Write, raw: &str, res: Result<&Measured, &String>
         Some(f) => {
             let (kind, detail) = encode_funding_kind(&f.kind);
             row.extend([
-                opt_addr(f.funding.from),
+                sender_cell(&f.funding),
                 asset(&f.funding.asset),
                 f.funding.amount.to_string(),
                 f.funding.block.to_string(),
@@ -394,7 +405,7 @@ fn write_main_row(w: &mut impl Write, raw: &str, res: Result<&Measured, &String>
                 kind.into(),
                 detail.unwrap_or_default(),
                 f.sender_nonce.map(|n| n.to_string()).unwrap_or_default(),
-                sender_flag(f.sender_nonce).into(),
+                funding_flag(f).into(),
                 f.funding.from.and_then(known_funder).unwrap_or_default().into(),
                 String::new(),
             ]);
@@ -433,7 +444,7 @@ fn write_entry_row(w: &mut impl Write, m: &Measured, c: &ClassifiedFunding) -> a
         secs_before(m, c),
         asset(&c.funding.asset),
         c.funding.amount.to_string(),
-        opt_addr(c.funding.from),
+        sender_cell(&c.funding),
         kind.into(),
         detail.unwrap_or_default(),
         c.sender_nonce.map(|n| n.to_string()).unwrap_or_default(),
@@ -468,6 +479,16 @@ fn write_row(w: &mut impl Write, fields: &[String]) -> anyhow::Result<()> {
 
 fn addr(a: Address) -> String {
     format!("{a:#x}")
+}
+
+/// Remitente de una entrada; en una nativa interna, `via:<contrato>` que la
+/// entregó (si se pudo atribuir), para no dejar la columna vacía.
+fn sender_cell(f: &crate::data::operator_tracker::Funding) -> String {
+    match (f.from, f.via_contract) {
+        (Some(a), _) => addr(a),
+        (None, Some(v)) => format!("via:{}", addr(v)),
+        (None, None) => String::new(),
+    }
 }
 
 fn opt_addr(a: Option<Address>) -> String {
@@ -511,7 +532,7 @@ fn print_summary(results: &[(String, Result<Measured, String>)]) {
             None => println!("{head}  {}", m.no_funding_reason()),
             Some(f) => {
                 let (kind, detail) = encode_funding_kind(&f.kind);
-                let flag = sender_flag(f.sender_nonce);
+                let flag = funding_flag(f);
                 let verdict = match (flag, detail) {
                     ("ZONA_GRIS", _) => format!("{kind} → ZONA GRIS: no confiar en la clasificación automática"),
                     (_, Some(d)) => format!("{kind} ({d})"),
@@ -527,7 +548,11 @@ fn print_summary(results: &[(String, Result<Measured, String>)]) {
                     fmt_amount(f.funding.amount),
                     asset_label,
                     antes,
-                    f.funding.from.map(short).unwrap_or_else(|| "?".into()),
+                    match (f.funding.from, f.funding.via_contract) {
+                        (Some(a), _) => short(a),
+                        (None, Some(v)) => format!("vía {}", short(v)),
+                        (None, None) => "?".into(),
+                    },
                 );
             }
         }
@@ -569,8 +594,9 @@ fn print_summary(results: &[(String, Result<Measured, String>)]) {
         let f = match m.main_funding() {
             None if m.funded_before_window() => "financiada antes de la ventana",
             None => "sin financiación externa en la ventana",
-            Some(f) => match sender_flag(f.sender_nonce) {
+            Some(f) => match funding_flag(f) {
                 "infra" => "financiador infra (nonce ≥ 100 000)",
+                "entrega_interna" => "entrega interna por contrato (bridge/relay)",
                 "ZONA_GRIS" => "financiador en ZONA GRIS",
                 "nonce_desconocido" => "financiador con nonce desconocido",
                 _ => "financiador wallet normal",

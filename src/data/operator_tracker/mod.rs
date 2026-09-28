@@ -20,12 +20,10 @@ pub mod watcher;
 pub mod watchlist;
 
 pub use baseline::{
-    LowReason, MIN_BASELINE_SAMPLES, INFRA_NONCE_THRESHOLD,
-    build_baselines, classify_fundings, judge, summarize, ClassifiedFunding, Confidence,
-    FundingBaseline, FundingKind, FundingVerdict, IncomeReason,
+    LowReason, build_baselines, classify_fundings, summarize, ClassifiedFunding, Confidence,
+    FundingKind, IncomeReason,
 };
 pub use history::{backfill_operator_history, classify_deployer};
-pub use funding::{backfill_erc20_fundings, find_native_fundings, native_vs_erc20};
-pub use watcher::{spawn_launch_watcher, WatchTransport};
-pub use watchlist::{Watchlist, WatchedOperator, DEFAULT_WATCHLIST_PATH};
+pub use watcher::spawn_launch_watcher;
+pub use watchlist::{Watchlist, DEFAULT_WATCHLIST_PATH};
 pub use profile::{DeployerKind, Funding, FundingAsset, OperatorProfile, PastLaunch};

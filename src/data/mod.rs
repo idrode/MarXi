@@ -6,9 +6,14 @@
 
 pub mod abi;
 pub mod backfill;
+// Esqueleto del watcher del factory completo (Fase 1, punto 2; todo!()).
+#[allow(dead_code)]
 pub mod watcher;
 pub mod candles;
 pub mod operator_tracker;
 pub mod token_lookup;
+// Esqueleto (todo!()) ya cubierto por `token_lookup`: deuda nº12, borrar o
+// convertir en fachada cuando se decida.
+#[allow(dead_code)]
 pub mod token_metadata;
 pub mod db;

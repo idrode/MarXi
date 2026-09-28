@@ -52,8 +52,6 @@ pub struct ChainProvider {
     /// Transport para `eth_getLogs` de rango amplio. Puede ser el mismo que
     /// `http` si el rpc_provider configurado ya es el público.
     logs: DynProvider,
-    /// `true` si `logs` es un transport distinto de `http`.
-    logs_is_separate: bool,
 }
 
 impl ChainProvider {
@@ -128,8 +126,8 @@ impl ChainProvider {
 
         // Segundo transport, solo para eth_getLogs de rango amplio. Si el
         // provider configurado YA es el público, no se abre otro.
-        let (logs, logs_is_separate) = if cfg.rpc_provider == "public" {
-            (http.clone(), false)
+        let logs = if cfg.rpc_provider == "public" {
+            http.clone()
         } else {
             let logs_url: reqwest::Url = cfg.rpc_http_fallback.parse().map_err(|e| {
                 anyhow::anyhow!("config chain.rpc_http_fallback no es una URL válida: {e}")
@@ -148,7 +146,7 @@ impl ChainProvider {
                 );
             }
             tracing::info!(chain_id = logs_chain, "provider de logs (RPC público) conectado");
-            (logs, true)
+            logs
         };
 
         Ok(Self {
@@ -157,7 +155,6 @@ impl ChainProvider {
             ws_url,
             http,
             logs,
-            logs_is_separate,
         })
     }
 
@@ -169,13 +166,9 @@ impl ChainProvider {
 
     /// Provider para `eth_getLogs` de rango amplio. Con `rpc_provider =
     /// "alchemy"` es el RPC público, porque Alchemy Free corta en 10 bloques.
+    #[allow(dead_code)] // API del provider dual; `get_logs_backfill` usa el campo directamente
     pub fn logs(&self) -> &DynProvider {
         &self.logs
-    }
-
-    /// `true` si los logs van por un transport distinto al de las calls.
-    pub fn has_separate_logs_provider(&self) -> bool {
-        self.logs_is_separate
     }
 
     /// `eth_getLogs` sobre un rango arbitrariamente grande, troceado en

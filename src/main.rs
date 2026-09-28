@@ -4,7 +4,11 @@ mod cli;
 mod cli_batch;
 mod config;
 mod data;
+// Esqueletos de Fase 2 a propósito (todo!()): se conservan como diseño y no
+// se implementan "de paso". Ver CLAUDE.md, "Redefinición del proyecto".
+#[allow(dead_code)]
 mod security;
+#[allow(dead_code)]
 mod trading;
 mod ui;
 

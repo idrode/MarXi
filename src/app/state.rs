@@ -141,9 +141,12 @@ impl SearchStatus {
 pub struct TokenView {
     pub address: String,
     pub symbol: Option<String>,
+    #[allow(dead_code)] // multi-launchpad (Fase 5); hoy solo Pons V2
     pub launchpad: Option<String>,
     pub phase: TokenPhase,
+    #[allow(dead_code)] // honeypot check (Fase 2)
     pub honeypot_checked: bool,
+    #[allow(dead_code)] // honeypot check (Fase 2)
     pub honeypot_risk: Option<String>,
 
     // --- estado on-chain (data::token_lookup) ---
@@ -225,7 +228,9 @@ pub struct Position {
     pub token_address: String,
     pub entry_price: f64,
     pub amount: f64,
+    #[allow(dead_code)] // cierre TP/SL (Fase 3)
     pub take_profit: Option<f64>,
+    #[allow(dead_code)] // cierre TP/SL (Fase 3)
     pub stop_loss: Option<f64>,
 }
 
@@ -281,6 +286,9 @@ pub struct OperatorView {
     /// `true` si la clasificación pide aviso destacado (relay o no evaluado).
     pub kind_needs_warning: bool,
     /// `true` solo si es wallet o wallet delegada.
+    // Se rellena en `ui::` pero nadie lo lee; quitarlo exige tocar `src/ui/`
+    // (TUI pausada): decidir al retomarla.
+    #[allow(dead_code)]
     pub kind_is_wallet: bool,
 
     /// Está en `watchlist.toml`, con su etiqueta si la tiene.

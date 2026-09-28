@@ -336,6 +336,7 @@ pub struct FundingBaseline {
     pub max: f64,
     /// Mediana del retardo hasta el siguiente lanzamiento. **Descriptivo**:
     /// medido que el retardo no discrimina financiación de ingreso.
+    #[allow(dead_code)] // descriptivo, sin consumidor todavía
     pub median_delay_secs: u64,
     /// Remitentes que aparecen en más de una financiación de esta wallet.
     /// Son los candidatos a "wallet madre" y, según lo medido, lo que de
@@ -401,7 +402,12 @@ pub fn build_baselines(classified: &[ClassifiedFunding]) -> Vec<FundingBaseline>
     out
 }
 
+// `FundingVerdict`, `DEFAULT_NATIVE_NOISE_FLOOR`, `judge` y `same_asset`: su
+// consumidor era la vigilancia en vivo del paso 5 (descartado 2026-09-18).
+// Se conservan porque son el veredicto documentado de `FundingBaseline` y los
+// fijan los tests (entre ellos, que el suelo no se coma 0,0098 ETH reales).
 /// Veredicto de una financiación nueva contra el baseline.
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum FundingVerdict {
     /// Dentro de `[0.5×, 2×]` de la mediana.
@@ -423,6 +429,7 @@ pub enum FundingVerdict {
 /// **0,0098 ETH** (`0x4ccee0d0…`, 4 h 15 antes de su primer lanzamiento), así
 /// que el suelo tiene que quedar claramente por debajo. 0,0001 ETH deja dos
 /// órdenes de magnitud de margen y sigue filtrando el polvo.
+#[allow(dead_code)]
 pub const DEFAULT_NATIVE_NOISE_FLOOR: f64 = 0.000_1;
 
 /// Juzga una entrada ya clasificada contra los baselines de la wallet.
@@ -430,6 +437,7 @@ pub const DEFAULT_NATIVE_NOISE_FLOOR: f64 = 0.000_1;
 /// Para ERC-20 no hay suelo de ruido: el criterio (activo gastable) ya degrada
 /// el polvo y los airdrops a confianza baja, y poner un umbral en unidades de
 /// un token cualquiera no significaría nada.
+#[allow(dead_code)]
 pub fn judge(
     baselines: &[FundingBaseline],
     classified: &ClassifiedFunding,
@@ -460,6 +468,7 @@ pub fn judge(
     }
 }
 
+#[allow(dead_code)]
 fn same_asset(a: &FundingAsset, b: &FundingAsset) -> bool {
     match (a, b) {
         (FundingAsset::Native, FundingAsset::Native) => true,

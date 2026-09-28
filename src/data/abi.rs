@@ -226,6 +226,7 @@ pub fn token_launched_by_deployers_filter(factory: Address, deployers: &[Address
 
 /// Filtro de todos los `TokenLaunched` de la factory, sin filtrar deployer.
 /// Lo usa el watcher del factory completo (Fase 1, punto 2).
+#[allow(dead_code)] // consumidor: watcher del factory completo, sin implementar
 pub fn token_launched_filter(factory: Address) -> Filter {
     Filter::new().address(factory).event_signature(TokenLaunched::SIGNATURE_HASH)
 }

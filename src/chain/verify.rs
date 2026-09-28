@@ -260,6 +260,7 @@ pub async fn confirm_uniswap_v4_state_view(
 
 /// Token JACKET: primer `PoolGraduated` de la factory V2 (bloque 27828161),
 /// par NVDA. Caso de validación post-graduación. Ver CLAUDE.md "Paso 0".
+#[allow(dead_code)] // referencia de validación documentada; hoy solo se usa el PoolId
 pub const JACKET_TOKEN: &str = "0xc9e9ab90654f82893D7Fd18b62f694992E8CEF29";
 /// PoolId de JACKET/NVDA = keccak256(abi.encode(PoolKey)), igual al
 /// `PoolRegistered.poolId` del hook y al `Initialize.id` del PoolManager.

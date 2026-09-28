@@ -63,8 +63,6 @@ pub enum LookupError {
              Si es un token de Pons V1, como el token de referencia PONS, su pool es Uniswap V3 y este \
              buscador no lo cubre")]
     NotAPonsV2Launch { address: String },
-    #[error("la fase on-chain es {phase} ({label}): no hay ni curva operativa ni pool V4 del que leer precio")]
-    NoTradeableVenue { phase: u8, label: &'static str },
 }
 
 /// Consulta el estado on-chain de un token. No toca logs ni disco.

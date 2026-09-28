@@ -498,8 +498,7 @@ async fn print_classification(
     fundings: Vec<crate::data::operator_tracker::Funding>,
 ) -> anyhow::Result<Vec<crate::data::operator_tracker::ClassifiedFunding>> {
     use crate::data::operator_tracker::baseline::{
-        build_baselines, classify_fundings, summarize, Confidence, FundingKind,
-        MIN_BASELINE_SAMPLES,
+        build_baselines, classify_fundings, summarize, FundingKind, MIN_BASELINE_SAMPLES,
     };
     use crate::data::operator_tracker::FundingAsset;
 

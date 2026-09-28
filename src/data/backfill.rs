@@ -52,11 +52,16 @@ const MAX_TIMESTAMP_ANCHORS: usize = 48;
 /// Un trade individual ya normalizado, sea de curva o de pool V4.
 #[derive(Debug, Clone)]
 pub struct TradePoint {
+    // block/timestamp/volume_pair: el trade completo se conserva; hoy solo se
+    // lee el precio, pero es lo que cachearía `data::db` (deuda nº13).
+    #[allow(dead_code)]
     pub block: u64,
+    #[allow(dead_code)]
     pub timestamp: u64,
     /// Precio de 1 token en unidades de pairToken.
     pub price: f64,
     /// Volumen del trade en unidades de pairToken.
+    #[allow(dead_code)]
     pub volume_pair: f64,
 }
 

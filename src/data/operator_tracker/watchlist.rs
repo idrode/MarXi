@@ -157,11 +157,6 @@ impl Watchlist {
             .retain(|o| o.parsed_address().map(|a| a != address).unwrap_or(true));
         self.operators.len() != before
     }
-
-    /// Las direcciones ya parseadas, que es lo que consume la vigilancia.
-    pub fn addresses(&self) -> anyhow::Result<Vec<Address>> {
-        self.operators.iter().map(|o| o.parsed_address()).collect()
-    }
 }
 
 /// Fecha de hoy en `YYYY-MM-DD`, reutilizando el formateador del CLI para no

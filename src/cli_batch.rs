@@ -52,6 +52,9 @@ const KNOWN_FUNDERS: &[(&str, &str)] = &[
     ("0x0ec4e45f9ce3020024c0418a74cd31fbc487038f", "infra; financió al runner 0xa7dea7ab (09-27)"),
     ("0x059df16bdcf8a6bd20bb4814518ff6a2df3c7b11", "infra; financió al caso B (09-18)"),
     ("0x56c262027e0de4aea31d2489529cb25d23e58a8b", "infra; financió al caso B (09-18)"),
+    // Marcador de vigilancia, no financiador confirmado: está para que salte
+    // solo si reaparece. Si resulta ser ruido, quitar esta línea.
+    ("0xa5df4d576a72ddbbb4296614aaf58ed6696ebe61", "VIGILANCIA (no confirmado); zona gris; financió al runner 0xe142304c (09-28)"),
 ];
 
 fn known_funder(a: Address) -> Option<&'static str> {

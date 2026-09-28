@@ -75,6 +75,7 @@ impl Db {
     }
 
     /// Base en memoria, para tests. Mismo schema.
+    #[cfg(test)]
     pub fn open_in_memory() -> anyhow::Result<Self> {
         let conn = Connection::open_in_memory()?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
@@ -234,6 +235,9 @@ impl Db {
     /// quien los consuma no tenga que saber de dónde vinieron. El `timestamp`
     /// puede ser interpolado (igual que al traerlo de la chain): vale para
     /// ordenar y medir cadencia, no como dato de auditoría.
+    // Lectura de la caché: nunca automática (decisión 2026-09-18); el
+    // consumidor (TUI o flag) se decide al usarlo.
+    #[allow(dead_code)]
     pub fn load_operator_launches(&self, address: Address) -> anyhow::Result<Vec<PastLaunch>> {
         let mut stmt = self.conn.prepare(
             "SELECT token, curve, pair_token, graduation_threshold, block, ts, tx_hash
@@ -376,6 +380,9 @@ pub struct NewAlert {
 }
 
 #[derive(Debug, Clone)]
+// Fila completa de `alert`; `alert list` imprime solo parte. Se conserva
+// entera para no reinterpretar el schema al leerla.
+#[allow(dead_code)]
 pub struct AlertRow {
     pub id: i64,
     pub kind: String,
@@ -389,6 +396,9 @@ pub struct AlertRow {
 
 /// Qué cubre el snapshot cacheado de un operador.
 #[derive(Debug, Clone)]
+// Hoy solo se muestra `cached_at`/`history_to_block`; el resto describe el
+// snapshot para cuando se lea la caché (ver `load_operator_launches`).
+#[allow(dead_code)]
 pub struct CacheInfo {
     pub kind_label: String,
     pub history_from_block: u64,

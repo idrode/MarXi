@@ -18,21 +18,27 @@ pub use state::AppState;
 /// implementen `data::watcher` y `trading::engine`.
 #[derive(Debug)]
 pub enum AppEvent {
+    // Las cuatro siguientes son del watcher del factory completo (Fase 1,
+    // punto 2), aún sin productor.
     /// Nuevo bloque visto por el listener de chain (para heartbeat/latencia).
+    #[allow(dead_code)]
     NewBlock { number: u64 },
     /// Un token nuevo fue lanzado en un launchpad soportado (evento TokenLaunched
     /// o equivalente). Aún no gradúa, solo existe la bonding curve.
+    #[allow(dead_code)]
     TokenLaunched {
         launchpad: String,
         token_address: String,
     },
     /// Un token graduó de bonding curve a pool de Uniswap V4.
+    #[allow(dead_code)]
     TokenGraduated {
         launchpad: String,
         token_address: String,
         pool_id: String,
     },
     /// Nueva vela agregada disponible para el par que se está siguiendo en pantalla.
+    #[allow(dead_code)]
     CandleUpdate {
         token_address: String,
         // OHLCV real vendrá tipado desde `data::candles` — placeholder aquí.
@@ -92,8 +98,6 @@ pub enum AppEvent {
         block: u64,
         tx_hash: String,
     },
-    /// El usuario entró en la pestaña Alertas: se da por leído el contador.
-    AlertsSeen,
 
     // --- input de terminal ---
     // Van por aquí a propósito: así `apply_event` sigue siendo la única
@@ -112,6 +116,8 @@ pub enum AppEvent {
     /// existe para que ni eso mute el estado fuera de `apply_event`.
     Tick,
     /// Resultado de una operación de trading (éxito/fallo), para reflejar en UI.
+    // Fase 2 (trading), aún sin productor.
+    #[allow(dead_code)]
     TradeResult {
         tx_hash: Option<String>,
         success: bool,
@@ -262,9 +268,6 @@ impl App {
                     self.state.alerts.drain(0..exceso);
                 }
                 self.state.alerts_unseen += 1;
-            }
-            AppEvent::AlertsSeen => {
-                self.state.alerts_unseen = 0;
             }
 
             AppEvent::SearchInputChar(c) => {

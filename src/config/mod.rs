@@ -8,6 +8,7 @@ use std::path::Path;
 #[derive(Debug, Deserialize, Clone)]
 pub struct AppConfig {
     pub chain: ChainConfig,
+    #[allow(dead_code)] // preflight (Fase 2)
     pub gas: GasConfig,
     pub trading: TradingConfig,
     pub launchpads: Vec<LaunchpadConfig>,
@@ -18,14 +19,18 @@ pub struct AppConfig {
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct ChainConfig {
+    #[allow(dead_code)] // se deserializa de config.toml; hoy informativo
     pub name: String,
     pub chain_id: u64,
     pub rpc_http_fallback: String,
     pub rpc_provider: String,
+    #[allow(dead_code)] // se deserializa de config.toml; hoy informativo
     pub explorer_url: String,
 }
 
 #[derive(Debug, Deserialize, Clone)]
+// Campos para `preflight` (Fase 2).
+#[allow(dead_code)]
 pub struct GasConfig {
     pub max_priority_fee_gwei: f64,
     pub gas_limit_margin_pct: u32,
@@ -34,7 +39,9 @@ pub struct GasConfig {
 #[derive(Debug, Deserialize, Clone)]
 pub struct TradingConfig {
     pub default_slippage_bps: u32,
+    #[allow(dead_code)] // preflight (Fase 2)
     pub tx_deadline_seconds: u64,
+    #[allow(dead_code)] // approve acotado (Fase 2)
     pub approve_max_multiplier: u32,
 }
 
@@ -43,6 +50,7 @@ pub struct LaunchpadConfig {
     pub name: String,
     pub enabled: bool,
     #[serde(default)]
+    #[allow(dead_code)] // informativo (V1/V2); no se ramifica por él
     pub version: Option<String>,
     pub launch_factory: String,
     pub launch_router: String,
@@ -61,7 +69,9 @@ pub struct UniswapV4Config {
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct SecurityConfig {
+    #[allow(dead_code)] // keystore (Fase 2)
     pub keystore_path: String,
+    #[allow(dead_code)] // honeypot check (Fase 2)
     pub honeypot_check_provider: String,
     pub simulate_before_send: bool,
 }

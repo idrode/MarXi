@@ -1,6 +1,7 @@
 mod app;
 mod chain;
 mod cli;
+mod cli_batch;
 mod config;
 mod data;
 mod security;
@@ -89,6 +90,29 @@ async fn main() -> Result<()> {
                 }
             }
             return cli::run_funding_cli(&cfg, addr, hours, from_block).await;
+        }
+        // Investigación de patrones: financiación de los creadores de un lote
+        // de tokens (runners vs control), sin ir dirección por dirección.
+        Some("batch-funding") => {
+            const USAGE: &str = "uso: cargo run -- batch-funding <fichero_de_tokens> \
+                                 [--out <prefijo>] [--lookback-blocks N]";
+            let input = args.get(2).ok_or_else(|| anyhow::anyhow!(USAGE))?;
+            let mut out = None;
+            let mut lookback = cli_batch::DEFAULT_LOOKBACK_BLOCKS;
+            let mut rest = args.iter().skip(3);
+            while let Some(arg) = rest.next() {
+                let val = rest.next().ok_or_else(|| anyhow::anyhow!("{arg} sin valor\n{USAGE}"))?;
+                match arg.as_str() {
+                    "--out" => out = Some(val.clone()),
+                    "--lookback-blocks" => {
+                        lookback = val.parse().map_err(|e| {
+                            anyhow::anyhow!("--lookback-blocks {val:?} no es un número: {e}")
+                        })?
+                    }
+                    _ => anyhow::bail!("argumento desconocido {arg:?}\n{USAGE}"),
+                }
+            }
+            return cli_batch::run_batch_funding_cli(&cfg, input, out.as_deref(), lookback).await;
         }
         // operator_tracker paso 4: alertas registradas en data::db y su
         // resultado (el ciclo de prueba y error).

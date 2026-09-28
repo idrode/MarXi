@@ -103,6 +103,20 @@ impl Confidence {
 /// 3× por debajo de la infraestructura menos activa.
 pub const INFRA_NONCE_THRESHOLD: u64 = 100_000;
 
+/// Límite inferior de la **zona gris** de nonce del remitente: por encima de
+/// la wallet normal más activa observada (10 929) y por debajo de
+/// `INFRA_NONCE_THRESHOLD`. **No interviene en la clasificación**: es una
+/// regla de lectura decidida por el usuario el 2026-09-27 — un remitente en
+/// `(GREY_ZONE_MIN_NONCE, INFRA_NONCE_THRESHOLD)` se marca "no confiar en la
+/// clasificación automática", aunque aquí salga con confianza alta. Caso que
+/// la motivó: `0x88d25c86…`, nonce 71 182, con forma de hot wallet de exchange.
+pub const GREY_ZONE_MIN_NONCE: u64 = 10_929;
+
+/// ¿Cae el nonce de un remitente en la zona gris? Ver `GREY_ZONE_MIN_NONCE`.
+pub fn in_grey_zone(nonce: u64) -> bool {
+    nonce > GREY_ZONE_MIN_NONCE && nonce < INFRA_NONCE_THRESHOLD
+}
+
 /// Por qué una entrada se descartó como financiación.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IncomeReason {

@@ -401,7 +401,7 @@ pub struct CacheInfo {
 /// `(kind, detalle)` de una clasificación, para guardarla sin perder el
 /// motivo. El motivo importa: `NotEvaluated` no es lo mismo que "es ingreso",
 /// y esa distinción se perdería guardando solo "income".
-fn encode_funding_kind(kind: &FundingKind) -> (&'static str, Option<String>) {
+pub(crate) fn encode_funding_kind(kind: &FundingKind) -> (&'static str, Option<String>) {
     match kind {
         FundingKind::Startup(Confidence::High) => ("startup_high", None),
         FundingKind::Startup(Confidence::Low(LowReason::AssetNotSpendable)) => {

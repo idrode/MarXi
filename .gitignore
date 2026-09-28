@@ -10,3 +10,6 @@ CLAUDE.md
 # repo público. La estructura del fichero está documentada en
 # src/data/operator_tracker/watchlist.rs.
 watchlist.toml
+lotes/
+lotes/
+lotes/

@@ -50,6 +50,11 @@ pub struct FundingScan {
     pub native_internal: usize,
 }
 
+/// Tope del RPC público para `eth_getLogs` **sin `address`** (medido el
+/// 2026-09-30: `-32602 ... only 30000 are allowed`; hasta el 2026-09-28 no
+/// existía). Con `address` el tope es 10 M y el `chunk` de config (5 M) cabe.
+const UNFILTERED_LOGS_MAX_BLOCKS: u64 = 30_000;
+
 /// Financiaciones en ERC-20: cualquier token, cualquier remitente.
 pub async fn backfill_erc20_fundings(
     provider: &ChainProvider,
@@ -63,7 +68,7 @@ pub async fn backfill_erc20_fundings(
         .event_signature(Transfer::SIGNATURE_HASH)
         .topic2(wallet.into_word());
     let logs = provider
-        .get_logs_backfill(&filter, from_block, to_block, chunk_blocks)
+        .get_logs_backfill(&filter, from_block, to_block, chunk_blocks.min(UNFILTERED_LOGS_MAX_BLOCKS))
         .await?;
 
     // Los decimales se leen una vez por token, no una por transferencia.
@@ -74,6 +79,12 @@ pub async fn backfill_erc20_fundings(
             .block_number
             .ok_or_else(|| anyhow::anyhow!("un Transfer llegó sin blockNumber"))?;
         let token = log.address();
+        // ERC-721 comparte topic0 con ERC-20 pero lleva el tokenId indexed
+        // (4 topics). Un NFT no es financiación: se salta, con aviso.
+        if log.topics().len() == 4 {
+            tracing::warn!(%token, block, "Transfer ERC-721 (NFT) recibido; no es financiación, se ignora");
+            continue;
+        }
         let ev = Transfer::decode_log(&log.inner)
             .map_err(|e| anyhow::anyhow!("log en {block} no decodifica como Transfer: {e}"))?;
 

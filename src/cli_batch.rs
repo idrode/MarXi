@@ -346,7 +346,7 @@ const MAIN_HEADER: &[&str] = &[
     "fin_bloque", "fin_segundos_antes", "fin_veredicto", "fin_detalle", "fin_nonce_remitente",
     "fin_marca", "fin_conocido", "sin_financiacion_motivo", "graduo", "bloque_graduacion",
     "segundos_hasta_graduar", "compras_hasta_graduar", "receptores_distintos_hasta_graduar",
-    "compra_creador_pct", "auto_graduado",
+    "compra_creador_pct", "auto_graduado", "atribucion", "atribucion_dudosa", "ejecutor",
 ];
 
 const ENTRIES_HEADER: &[&str] = &[
@@ -391,7 +391,7 @@ fn write_main_row(w: &mut impl Write, raw: &str, res: Result<&Measured, &String>
     ];
     match m.main_funding() {
         None => {
-            row.resize(MAIN_HEADER.len() - GRADUATION_COLS - 1, String::new());
+            row.resize(MAIN_HEADER.len() - GRADUATION_COLS - ATTRIBUTION_COLS - 1, String::new());
             row.push(m.no_funding_reason());
         }
         Some(f) => {
@@ -426,13 +426,18 @@ fn write_main_row(w: &mut impl Write, raw: &str, res: Result<&Measured, &String>
         g.map(|g| g.distinct_recipients.to_string()).unwrap_or_default(),
         g.and_then(|g| g.creator_share()).map(|s| format!("{:.1}", 100.0 * s)).unwrap_or_default(),
         m.auto_graduated().into(),
+        c.attribution.code().into(),
+        if c.attribution.doubtful() { "si" } else { "no" }.into(),
+        opt_addr(c.attribution.executor()),
     ]);
     debug_assert_eq!(row.len(), MAIN_HEADER.len());
     write_row(w, &row)
 }
 
-/// Columnas de graduación al final de `MAIN_HEADER`.
+/// Columnas de graduación, justo antes de las de atribución en `MAIN_HEADER`.
 const GRADUATION_COLS: usize = 7;
+/// Columnas de atribución de creador, al final de `MAIN_HEADER`.
+const ATTRIBUTION_COLS: usize = 3;
 
 fn write_entry_row(w: &mut impl Write, m: &Measured, c: &ClassifiedFunding) -> anyhow::Result<()> {
     let (kind, detail) = encode_funding_kind(&c.kind);

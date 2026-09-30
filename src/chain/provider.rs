@@ -41,6 +41,13 @@ const LOG_RETRIES: u32 = 3;
 const MIN_CHUNK_BLOCKS: u64 = 64;
 /// Espera base entre reintentos; se multiplica por el número de intento.
 const RETRY_BASE_SECS: u64 = 3;
+/// Reintentos del transport HTTP principal ante 429 (deuda nº8).
+const HTTP_RATE_LIMIT_RETRIES: u32 = 10;
+/// Espera base de esos reintentos, en ms.
+const HTTP_RATE_LIMIT_BACKOFF_MS: u64 = 1_000;
+/// Presupuesto de unidades de cómputo por segundo que la capa usa para
+/// espaciar (valor documentado de Alchemy Free; no medido en esta chain).
+const HTTP_COMPUTE_UNITS_PER_SEC: u64 = 330;
 
 pub struct ChainProvider {
     pub chain_id: u64,
@@ -110,7 +117,18 @@ impl ChainProvider {
         let url: reqwest::Url = http_url
             .parse()
             .map_err(|e| anyhow::anyhow!("URL HTTP del rpc_provider {:?} inválida: {e}", cfg.rpc_provider))?;
-        let http = ProviderBuilder::new().connect_http(url).erased();
+        // Reintento con espera ante 429: Alchemy Free corta por unidades de
+        // cómputo por segundo y sin esto una ráfaga (bisección de saldo o de
+        // bytecode) tumba la consulta entera. Medido el 2026-09-30 en
+        // `batch-funding`: 3 de 5 tokens caían con 429.
+        let client = alloy::rpc::client::ClientBuilder::default()
+            .layer(alloy::transports::layers::RetryBackoffLayer::new(
+                HTTP_RATE_LIMIT_RETRIES,
+                HTTP_RATE_LIMIT_BACKOFF_MS,
+                HTTP_COMPUTE_UNITS_PER_SEC,
+            ))
+            .http(url);
+        let http = ProviderBuilder::new().connect_client(client).erased();
 
         let remote = http.get_chain_id().await.map_err(|e| {
             anyhow::anyhow!("eth_chainId falló contra rpc_provider {:?}: {e}", cfg.rpc_provider)

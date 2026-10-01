@@ -173,18 +173,29 @@ pub async fn run_batch_funding_cli(
     let addrs = LookupAddresses::from_config(cfg)?;
     let chunk = cfg.indexer.backfill_max_blocks_per_request;
 
-    let mut main_csv = std::fs::File::create(&main_path)?;
-    let mut entries_csv = std::fs::File::create(&entries_path)?;
-    writeln!(main_csv, "{}", MAIN_HEADER.join(","))?;
-    writeln!(entries_csv, "{}", ENTRIES_HEADER.join(","))?;
+    // Reanudable: si la salida ya existe, se conservan los tokens con fila `ok`
+    // y se mide el resto (ver `prepare_resume`).
+    let done = prepare_resume(&main_path, &entries_path, &tokens)?;
+    let mut main_csv = std::fs::OpenOptions::new().append(true).open(&main_path)?;
+    let mut entries_csv = std::fs::OpenOptions::new().append(true).open(&entries_path)?;
 
     println!(
         "batch-funding: {} tokens de {input}; ventana {lookback_blocks} bloques antes de cada lanzamiento",
         tokens.len()
     );
+    if !done.is_empty() {
+        println!(
+            "REANUDANDO: {} tokens ya medidos en {main_path} se conservan y se saltan; quedan {}",
+            done.len(),
+            tokens.len() - done.len()
+        );
+    }
     let started = std::time::Instant::now();
     let mut results: Vec<(String, Result<Measured, String>)> = Vec::new();
     for (i, raw) in tokens.iter().enumerate() {
+        if done.contains(&raw.to_lowercase()) {
+            continue;
+        }
         println!("[{}/{}] {raw} ...", i + 1, tokens.len());
         let res = match raw.parse::<Address>() {
             Err(e) => Err(format!("no es una dirección EVM válida: {e}")),
@@ -192,12 +203,17 @@ pub async fn run_batch_funding_cli(
                 .await
                 .map_err(|e| format!("{e:#}")),
         };
+        // Orden a propósito: primero las entradas (y al disco), después la fila
+        // principal. La fila principal es la marca de "token terminado"; si el
+        // proceso muere entre medias, las entradas huérfanas se descartan al
+        // reanudar.
         match &res {
             Ok(m) => {
-                write_main_row(&mut main_csv, raw, Ok(m))?;
                 for c in &m.classified {
                     write_entry_row(&mut entries_csv, m, c)?;
                 }
+                entries_csv.flush()?;
+                write_main_row(&mut main_csv, raw, Ok(m))?;
                 println!(
                     "    {} · creador {} · nonce {} · {} entradas previas",
                     m.creator.via.code(),
@@ -217,11 +233,108 @@ pub async fn run_batch_funding_cli(
     }
 
     print_summary(&results);
+    if !done.is_empty() {
+        println!(
+            "\nOJO: el resumen de arriba cubre solo los {} tokens medidos en esta ejecución; \
+             los {} reanudados están en {main_path}.",
+            results.len(),
+            done.len()
+        );
+    }
     println!(
         "\n{:.0} s en total. Escrito: {main_path} (una fila por token) y {entries_path} (todas las entradas previas).",
         started.elapsed().as_secs_f64()
     );
     Ok(())
+}
+
+/// Deja los dos CSV listos para añadir filas y devuelve los tokens (en
+/// minúsculas) que ya están terminados.
+///
+/// - Si `main_path` no existe, crea los dos ficheros con su cabecera.
+/// - Si existe, **conserva solo las filas `ok`** del principal; las filas
+///   `error` se vuelven a medir (un 429 o un timeout no es un resultado). Una
+///   última línea sin `\n` (escritura cortada) se descarta.
+/// - Del de entradas conserva solo las de tokens terminados: las de un token
+///   que murió a medias, sin fila principal, se descartan.
+/// - Se niega si la cabecera no es la de este binario (otra versión del
+///   esquema) o si el CSV tiene tokens que no están en la lista de entrada
+///   (otro lote con el mismo `--out`).
+///
+/// La reescritura va a un `.tmp` y se renombra, para no dejar los ficheros a
+/// medias si el proceso muere aquí.
+fn prepare_resume(main_path: &str, entries_path: &str, tokens: &[String]) -> anyhow::Result<BTreeSet<String>> {
+    let main_header = MAIN_HEADER.join(",");
+    let entries_header = ENTRIES_HEADER.join(",");
+    if !std::path::Path::new(main_path).exists() {
+        std::fs::write(main_path, format!("{main_header}\n"))?;
+        std::fs::write(entries_path, format!("{entries_header}\n"))?;
+        return Ok(BTreeSet::new());
+    }
+
+    let wanted: BTreeSet<String> = tokens.iter().map(|t| t.to_lowercase()).collect();
+    let main_text = std::fs::read_to_string(main_path)?;
+    let mut lines = complete_lines(&main_text);
+    let header = lines.next().unwrap_or_default();
+    anyhow::ensure!(
+        header == main_header,
+        "{main_path} existe con otra cabecera (otra versión del esquema): no se puede reanudar; muévelo o usa otro --out"
+    );
+    let mut done = BTreeSet::new();
+    let mut kept = vec![main_header];
+    let mut dropped_errors = 0;
+    for line in lines {
+        let mut cols = line.splitn(3, ',');
+        let (tok, estado) = (cols.next().unwrap_or_default().to_lowercase(), cols.next().unwrap_or_default());
+        anyhow::ensure!(
+            wanted.contains(&tok),
+            "{main_path} contiene {tok}, que no está en la lista de entrada: ¿otro lote con el mismo --out?"
+        );
+        if estado == "ok" {
+            done.insert(tok);
+            kept.push(line.to_string());
+        } else {
+            dropped_errors += 1;
+        }
+    }
+
+    let entries_text = std::fs::read_to_string(entries_path).unwrap_or_default();
+    let mut elines = complete_lines(&entries_text);
+    let eheader = elines.next().unwrap_or_default();
+    anyhow::ensure!(
+        eheader.is_empty() || eheader == entries_header,
+        "{entries_path} existe con otra cabecera: no se puede reanudar; muévelo o usa otro --out"
+    );
+    let mut ekept = vec![entries_header];
+    let mut orphans = 0;
+    for line in elines {
+        let tok = line.split(',').next().unwrap_or_default().to_lowercase();
+        if done.contains(&tok) {
+            ekept.push(line.to_string());
+        } else {
+            orphans += 1;
+        }
+    }
+
+    for (path, rows) in [(main_path, &kept), (entries_path, &ekept)] {
+        let tmp = format!("{path}.tmp");
+        std::fs::write(&tmp, rows.iter().map(|r| format!("{r}\n")).collect::<String>())?;
+        std::fs::rename(&tmp, path)?;
+    }
+    if dropped_errors > 0 {
+        println!("reanudar: {dropped_errors} filas `error` se descartan y se vuelven a medir");
+    }
+    if orphans > 0 {
+        println!("reanudar: {orphans} entradas de un token sin terminar se descartan");
+    }
+    Ok(done)
+}
+
+/// Líneas terminadas en `\n`; una última línea sin terminar (escritura
+/// cortada a medias) se descarta.
+fn complete_lines(text: &str) -> impl Iterator<Item = &str> {
+    let end = text.rfind('\n').map_or(0, |i| i + 1);
+    text[..end].lines()
 }
 
 /// Una dirección por línea; `#` empieza un comentario; líneas vacías fuera.
@@ -678,6 +791,43 @@ mod tests {
         let v = read_token_list(path.to_str().unwrap()).unwrap();
         std::fs::remove_file(&path).ok();
         assert_eq!(v, vec!["0xAb".to_string(), "0xcd".to_string()]);
+    }
+
+    #[test]
+    fn reanudar_conserva_lo_terminado_y_descarta_lo_cortado() {
+        let dir = std::env::temp_dir().join(format!("marxi_resume_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (main, entries) = (dir.join("l.csv"), dir.join("l_entradas.csv"));
+        let (main, entries) = (main.to_str().unwrap(), entries.to_str().unwrap());
+        let tokens: Vec<String> = ["0xAA", "0xbb", "0xcc"].iter().map(|s| s.to_string()).collect();
+        // 0xaa terminado; 0xbb con fila `error`; 0xcc murió a medias (entradas
+        // sin fila principal, y la última línea cortada sin `\n`).
+        std::fs::write(
+            main,
+            format!("{}\n0xAA,ok,,x\n0xbb,error,timeout\n0xcc,o", MAIN_HEADER.join(",")),
+        )
+        .unwrap();
+        std::fs::write(
+            entries,
+            format!("{}\n0xaa,c,1\n0xcc,c,2\n0xcc,c,", ENTRIES_HEADER.join(",")),
+        )
+        .unwrap();
+
+        let done = prepare_resume(main, entries, &tokens).unwrap();
+        assert_eq!(done, BTreeSet::from(["0xaa".to_string()]));
+        assert_eq!(
+            std::fs::read_to_string(main).unwrap(),
+            format!("{}\n0xAA,ok,,x\n", MAIN_HEADER.join(","))
+        );
+        assert_eq!(
+            std::fs::read_to_string(entries).unwrap(),
+            format!("{}\n0xaa,c,1\n", ENTRIES_HEADER.join(","))
+        );
+
+        // Un token que no está en la lista: se niega (otro lote, mismo --out).
+        let otros = vec!["0xbb".to_string()];
+        assert!(prepare_resume(main, entries, &otros).is_err());
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
